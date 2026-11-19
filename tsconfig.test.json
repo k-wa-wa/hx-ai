@@ -1,0 +1,10 @@
+{
+  // テストだけ Node の API (ソースを読む契約テストなど) を使えるようにする。
+  // アプリのコードは tsconfig.json で検査し、Node の型を見せない。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "exclude": []
+}

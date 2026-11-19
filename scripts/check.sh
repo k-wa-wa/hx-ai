@@ -6,8 +6,12 @@ cd "$(dirname "$0")/.."
 
 step() { printf '\n== %s\n' "$1"; }
 
-step "TypeScript の型検査"
+step "TypeScript の型検査 (アプリ / テスト)"
 npx tsc --noEmit
+npx tsc --noEmit -p tsconfig.test.json
+
+step "フロントエンドのテスト"
+npx vitest run
 
 step "Rust の整形"
 (cd src-tauri && cargo fmt --check)

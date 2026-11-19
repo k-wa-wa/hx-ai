@@ -13,6 +13,7 @@ import {
   TargetWindow,
 } from "./api";
 import { ChatLog, ChatMessage } from "./components/ChatLog";
+import { pickDevice } from "./devices";
 import { allGranted, PermissionDots, PermissionPanel } from "./components/PermissionPanel";
 import { ReferenceDrop } from "./components/ReferenceDrop";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -35,13 +36,6 @@ function savePref(key: string, value: string) {
   } catch {
     /* 保存できなくても動作には影響しない */
   }
-}
-
-function pickDevice(devices: InputDevice[], saved: string | null): string | null {
-  if (saved && devices.some((d) => d.id === saved)) return saved;
-  const stomp = devices.find((d) => /hx\s*stomp/i.test(d.name));
-  if (stomp) return stomp.id;
-  return devices.find((d) => d.is_default)?.id ?? devices[0]?.id ?? null;
 }
 
 let nextId = 1;
