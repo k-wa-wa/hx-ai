@@ -42,9 +42,7 @@ pub struct Point {
 
 /// 正規化座標を画面座標に変換する。範囲外の値はエラーにする (丸めて続けない)。
 pub fn normalized_to_screen(window: Rect, nx: f64, ny: f64) -> Result<Point, String> {
-    if !nx.is_finite() || !ny.is_finite() {
-        return Err(format!("座標が数値ではありません: ({nx}, {ny})"));
-    }
+    // NaN と無限大も範囲外として弾かれる
     if !(0.0..=NORMALIZED_MAX).contains(&nx) || !(0.0..=NORMALIZED_MAX).contains(&ny) {
         return Err(format!("座標が 0〜1000 の範囲外です: ({nx}, {ny})"));
     }
@@ -181,6 +179,73 @@ mod tests {
         assert!(normalized_to_screen(WIN, -1.0, 10.0).is_err());
         assert!(normalized_to_screen(WIN, 10.0, 1000.1).is_err());
         assert!(normalized_to_screen(WIN, f64::NAN, 10.0).is_err());
+        assert!(normalized_to_screen(WIN, 10.0, f64::NAN).is_err());
+        assert!(normalized_to_screen(WIN, f64::INFINITY, 10.0).is_err());
+    }
+
+    #[test]
+    fn rect_excludes_right_and_bottom_edges() {
+        // 幅 1200 のウィンドウの右端 x = 1300 は隣のピクセルで、ウィンドウの外
+        assert!(WIN.contains(Point { x: 100.0, y: 50.0 }));
+        assert!(WIN.contains(Point {
+            x: 1299.9,
+            y: 849.9
+        }));
+        assert!(!WIN.contains(Point {
+            x: 1300.0,
+            y: 300.0
+        }));
+        assert!(!WIN.contains(Point { x: 500.0, y: 850.0 }));
+        assert!(!WIN.contains(Point { x: 99.9, y: 300.0 }));
+        assert!(!WIN.contains(Point { x: 500.0, y: 49.9 }));
+    }
+
+    #[test]
+    fn operable_area_removes_title_bar_and_edges() {
+        assert_eq!(
+            operable_area(WIN),
+            Rect {
+                x: 100.0 + EDGE_MARGIN,
+                y: 50.0 + TITLE_BAR_HEIGHT,
+                width: 1200.0 - 2.0 * EDGE_MARGIN,
+                height: 800.0 - TITLE_BAR_HEIGHT - EDGE_MARGIN,
+            }
+        );
+        // 小さすぎるウィンドウでも負の大きさにしない
+        let tiny = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 10.0,
+        };
+        let a = operable_area(tiny);
+        assert_eq!((a.width, a.height), (0.0, 0.0));
+    }
+
+    #[test]
+    fn small_geometry_changes_are_detected() {
+        // 1 ポイント以内は丸めの誤差として許す
+        let jitter = Rect {
+            x: 100.5,
+            y: 50.5,
+            width: 1200.5,
+            height: 799.5,
+        };
+        assert!(ensure_same_geometry(WIN, jitter).is_ok());
+        for moved in [
+            Rect { x: 102.0, ..WIN },
+            Rect { y: 52.0, ..WIN },
+            Rect {
+                width: 1202.0,
+                ..WIN
+            },
+            Rect {
+                height: 798.0,
+                ..WIN
+            },
+        ] {
+            assert!(ensure_same_geometry(WIN, moved).is_err(), "{moved:?}");
+        }
     }
 
     #[test]
@@ -294,5 +359,7 @@ mod tests {
     fn mouse_movement_is_detected() {
         assert!(ensure_mouse_untouched((100, 100), (101, 99)).is_ok());
         assert!(ensure_mouse_untouched((100, 100), (140, 100)).is_err());
+        assert!(ensure_mouse_untouched((100, 100), (100, 105)).is_err());
+        assert!(ensure_mouse_untouched((100, 100), (95, 100)).is_err());
     }
 }

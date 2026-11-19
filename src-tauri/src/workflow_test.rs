@@ -264,6 +264,7 @@ async fn no_actions_means_no_undo_entry() {
     let mut e = FakeEngine::new(vec![answer(vec![])]);
     let r = adjust(&mut e, &s).await;
     assert_eq!(r.error, None);
+    assert_eq!(r.undo_depth, 0);
     assert_eq!(r.explanations, vec!["説明".to_string()]);
     assert!(undo_stack(&s).is_empty());
     assert!(e.desktop.events.is_empty());

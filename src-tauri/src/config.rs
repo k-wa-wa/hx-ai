@@ -211,6 +211,21 @@ mod tests {
     }
 
     #[test]
+    fn missing_settings_file_means_defaults() {
+        let path = std::env::temp_dir().join("hx-ai-test-no-such-dir/settings.json");
+        assert_eq!(load(&path).unwrap(), StoredSettings::default());
+    }
+
+    #[test]
+    fn unreadable_settings_path_is_an_error() {
+        // ファイルの代わりにディレクトリがある (読めない) 場合は既定値で続けない
+        let dir = std::env::temp_dir().join(format!("hx-ai-test-dir-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("settings.json")).unwrap();
+        assert!(load(&settings_path(&dir)).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn broken_settings_file_is_an_error() {
         let dir = std::env::temp_dir().join(format!("hx-ai-test-broken-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

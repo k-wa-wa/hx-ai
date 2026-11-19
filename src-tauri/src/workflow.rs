@@ -23,6 +23,9 @@ pub const MAX_ROUNDS: usize = 4;
 
 /// リファレンス音源の上限。base64 にすると 4/3 倍になり、API のリクエスト上限 (約 20MB) に収める。
 pub const MAX_REFERENCE_BYTES: usize = 10 * 1024 * 1024;
+// base64 で 4/3 倍になってもリクエスト上限に収まり、数分の MP3 (数 MB) は受け付けること
+const _: () = assert!(MAX_REFERENCE_BYTES * 4 / 3 < 20 * 1024 * 1024);
+const _: () = assert!(MAX_REFERENCE_BYTES >= 5 * 1024 * 1024);
 
 /// Undo 履歴に残す数。
 pub const MAX_UNDO_GROUPS: usize = 20;
@@ -179,7 +182,7 @@ impl Engine for TauriEngine {
     ) -> Result<Outcome, String> {
         blocking(move || {
             Ok(automation::execute(
-                &mut automation::MacDesktop::default(),
+                &mut macos::MacDesktop::default(),
                 &actions,
                 &window,
             ))

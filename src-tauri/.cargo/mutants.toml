@@ -1,0 +1,33 @@
+# cargo mutants の設定。実装をわざと少し壊し、テストが気づくかを確かめる。
+# OS に触る部分 (実機でしか確かめられない) は対象から外す。
+
+exclude_globs = [
+  "src/macos.rs",
+  "src/capture.rs",
+  "src/lib.rs",
+  "src/*_test.rs",
+  "src/main.rs",
+]
+
+# 正規表現は「replace X with Y in 関数名」という表示名に当たる (モジュールのパスは含まない)。
+exclude_re = [
+  "MacDesktop",
+  "TauriEngine",
+  "emit_progress",
+  "blocking",
+  "ensure_permissions",
+  "workflow::run_cycle",
+  "workflow::undo_last",
+  "in list_input_devices$",
+  "replace list_input_devices ",
+  "in find_device$",
+  "replace find_device ",
+  "in build$",
+  # 録音の中の判定は check_duration / check_not_silent に切り出してテストしている
+  "in record$",
+  "replace record ",
+  "replace process_env ",
+  "open_prompt_to_get_permissions",
+  # 待ち時間は 0 で走らせるので、値を変えてもテストでは区別できない
+  "ai::call\\b",
+]

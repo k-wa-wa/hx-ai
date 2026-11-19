@@ -425,7 +425,7 @@ fn error_chain(e: &dyn std::error::Error) -> String {
         out.push_str(&format!(": {src}"));
         cur = src.source();
     }
-    if out.contains("timed out") || out.contains("operation timed out") {
+    if out.contains("timed out") {
         out.push_str(&format!(" ({} 秒で打ち切った)", REQUEST_TIMEOUT.as_secs()));
     }
     out
@@ -536,6 +536,111 @@ mod tests {
         instruction: "太く",
     };
 
+    /// JSON の値のキーを並べる。
+    fn keys(v: &Value) -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    fn strings(v: &Value) -> Vec<String> {
+        let mut s: Vec<String> = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_string())
+            .collect();
+        s.sort();
+        s
+    }
+
+    #[test]
+    fn response_schema_matches_rust_types() {
+        // AI に渡すスキーマと、応答を読む Rust の型がずれていないかを確かめる
+        let schema = response_schema();
+        let sample = AiResponse {
+            explanation: String::new(),
+            actions: vec![action(ActionKind::SetValue, "1")],
+            needs_another_round: false,
+        };
+        let json = serde_json::to_value(&sample).unwrap();
+        assert_eq!(keys(&schema["properties"]), keys(&json));
+        assert_eq!(strings(&schema["required"]), keys(&json));
+
+        let item = &schema["properties"]["actions"]["items"];
+        assert_eq!(keys(&item["properties"]), keys(&json["actions"][0]));
+        assert_eq!(strings(&item["required"]), keys(&json["actions"][0]));
+
+        let kinds: Vec<String> = [ActionKind::SetValue, ActionKind::SelectBlock]
+            .iter()
+            .map(|k| {
+                serde_json::to_value(k)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        let mut kinds_sorted = kinds.clone();
+        kinds_sorted.sort();
+        assert_eq!(strings(&item["properties"]["type"]["enum"]), kinds_sorted);
+    }
+
+    #[test]
+    fn request_carries_the_schema() {
+        let body = build_request("m", &input(ADJUST, &[]));
+        assert_eq!(
+            body["response_format"]["json_schema"]["schema"],
+            response_schema()
+        );
+    }
+
+    #[test]
+    fn system_prompt_states_the_rules_the_validator_enforces() {
+        // 検証で弾く規則を AI に伝えていないと、毎回弾かれてしまう
+        assert!(SYSTEM_PROMPT.contains("(1000, 1000)"));
+        assert!(SYSTEM_PROMPT.contains(&format!("最大 {MAX_SET_VALUE_ACTIONS} 個")));
+        assert!(SYSTEM_PROMPT.contains("select_block を 1 つだけ"));
+        assert!(SYSTEM_PROMPT.contains("単位を付けない数値"));
+    }
+
+    #[test]
+    fn mime_types() {
+        assert_eq!(AudioFormat::Wav.mime(), "audio/wav");
+        assert_eq!(AudioFormat::Mp3.mime(), "audio/mpeg");
+    }
+
+    #[test]
+    fn truncate_keeps_short_text_and_cuts_long_text_by_chars() {
+        assert_eq!(truncate("あいう", 3), "あいう");
+        assert_eq!(truncate("あいうえ", 3), "あいう…");
+        assert_eq!(truncate("", 0), "");
+    }
+
+    #[test]
+    fn error_chain_includes_causes_and_timeout_note() {
+        #[derive(Debug)]
+        struct E(&'static str, Option<Box<E>>);
+        impl std::fmt::Display for E {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for E {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|e| e as _)
+            }
+        }
+        let e = E(
+            "送れない",
+            Some(Box::new(E("接続", Some(Box::new(E("timed out", None)))))),
+        );
+        let s = error_chain(&e);
+        assert!(s.starts_with("送れない: 接続: timed out"), "{s}");
+        assert!(s.contains(&format!("{} 秒で打ち切った", REQUEST_TIMEOUT.as_secs())));
+        assert_eq!(error_chain(&E("単独", None)), "単独");
+    }
+
     #[test]
     fn retryable_statuses() {
         for s in [429, 500, 502, 503, 504] {
@@ -592,6 +697,15 @@ mod tests {
         let mut a = action(ActionKind::SetValue, "4.5");
         a.x = 1200.0;
         assert!(validate(&resp(vec![a]), &ADJUST, false).is_err());
+    }
+
+    #[test]
+    fn validate_accepts_exactly_the_maximum() {
+        let r = resp(vec![
+            action(ActionKind::SetValue, "1");
+            MAX_SET_VALUE_ACTIONS
+        ]);
+        assert!(validate(&r, &ADJUST, false).is_ok());
     }
 
     #[test]
@@ -670,12 +784,11 @@ mod tests {
         assert!(content[0]["text"].as_str().unwrap().contains("太く"));
         assert!(content[0]["text"].as_str().unwrap().contains("2400×1600"));
         assert_eq!(content[1]["input_audio"]["format"], "mp3");
-        assert_eq!(content[1]["input_audio"]["data"], b64(b"REF"));
+        // 期待値は b64 で作らず固定値で書く (b64 が壊れても気づけるように)
+        assert_eq!(content[1]["input_audio"]["data"], "UkVG");
+        assert_eq!(content[2]["input_audio"]["data"], "V0FW");
         assert_eq!(content[2]["input_audio"]["format"], "wav");
-        assert_eq!(
-            content[3]["image_url"]["url"],
-            format!("data:image/png;base64,{}", b64(b"PNG"))
-        );
+        assert_eq!(content[3]["image_url"]["url"], "data:image/png;base64,UE5H");
     }
 
     #[test]

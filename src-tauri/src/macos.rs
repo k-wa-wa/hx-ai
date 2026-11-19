@@ -4,12 +4,17 @@ use std::ffi::c_void;
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
+use enigo::{Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
 use serde::Serialize;
+
+use crate::automation::Desktop;
+use crate::capture;
+use crate::geometry::{Rect, ScreenWindow};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -172,4 +177,73 @@ pub fn activate(pid: i32) -> Result<(), String> {
         "HX Edit を最前面にできませんでした (最前面: {})",
         frontmost_name()
     ))
+}
+
+/// 本物の macOS。enigo は最初の入力操作のときに作る (権限が無いうちは作らない)。
+#[derive(Default)]
+pub struct MacDesktop {
+    enigo: Option<Enigo>,
+}
+
+impl MacDesktop {
+    fn enigo(&mut self) -> Result<&mut Enigo, String> {
+        if self.enigo.is_none() {
+            let e = Enigo::new(&Settings {
+                open_prompt_to_get_permissions: false,
+                ..Settings::default()
+            })
+            .map_err(|e| format!("自動操作を初期化できません: {e}"))?;
+            self.enigo = Some(e);
+        }
+        Ok(self.enigo.as_mut().expect("直前で作った"))
+    }
+}
+
+impl Desktop for MacDesktop {
+    fn accessibility_granted(&self) -> bool {
+        permission_status().accessibility == "granted"
+    }
+    fn activate(&mut self, pid: i32) -> Result<(), String> {
+        activate(pid)
+    }
+    fn frontmost(&self) -> (Option<i32>, String) {
+        (frontmost_pid(), frontmost_name())
+    }
+    fn window_rect(&self, window_id: u32) -> Result<Option<Rect>, String> {
+        capture::current_rect(window_id)
+    }
+    fn screen_windows(&self) -> Result<Vec<ScreenWindow>, String> {
+        capture::screen_windows()
+    }
+    fn mouse_location(&self) -> Result<(i32, i32), String> {
+        match &self.enigo {
+            Some(e) => e
+                .location()
+                .map_err(|e| format!("マウスの位置を取得できません: {e}")),
+            None => Err("自動操作が初期化されていません".to_string()),
+        }
+    }
+    fn move_mouse(&mut self, x: i32, y: i32) -> Result<(), String> {
+        self.enigo()?
+            .move_mouse(x, y, Coordinate::Abs)
+            .map_err(|e| format!("マウスを動かせません: {e}"))
+    }
+    fn click(&mut self) -> Result<(), String> {
+        self.enigo()?
+            .button(Button::Left, Direction::Click)
+            .map_err(|e| format!("クリックできません: {e}"))
+    }
+    fn type_text(&mut self, text: &str) -> Result<(), String> {
+        self.enigo()?
+            .text(text)
+            .map_err(|e| format!("値を入力できません: {e}"))
+    }
+    fn press_enter(&mut self) -> Result<(), String> {
+        self.enigo()?
+            .key(Key::Return, Direction::Click)
+            .map_err(|e| format!("Enter を押せません: {e}"))
+    }
+    fn wait(&mut self, d: Duration) {
+        std::thread::sleep(d);
+    }
 }

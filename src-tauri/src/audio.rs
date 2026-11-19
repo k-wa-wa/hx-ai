@@ -69,9 +69,7 @@ fn find_device(device_id: Option<&str>) -> Result<cpal::Device, String> {
 
 /// 指定したデバイスから `seconds` 秒録音する。
 pub fn record(device_id: Option<&str>, seconds: u32) -> Result<Recording, String> {
-    if !(1..=30).contains(&seconds) {
-        return Err(format!("録音時間は 1〜30 秒にしてください: {seconds}"));
-    }
+    check_duration(seconds)?;
     let device = find_device(device_id)?;
     let supported = device
         .default_input_config()
@@ -111,11 +109,7 @@ pub fn record(device_id: Option<&str>, seconds: u32) -> Result<Recording, String
     let out_channels = in_channels.clamp(1, MAX_OUTPUT_CHANNELS);
     let selected = select_channels(&samples, in_channels, out_channels);
     let peak = peak_dbfs(&selected);
-    if peak < SILENCE_THRESHOLD_DBFS {
-        return Err(format!(
-            "録音がほぼ無音でした (ピーク {peak:.1} dBFS)。ギターを弾きながら録音し、入力デバイスが正しいか確かめてください"
-        ));
-    }
+    check_not_silent(peak)?;
     let wav = encode_wav(&selected, out_channels, sample_rate)?;
     Ok(Recording {
         wav,
@@ -123,6 +117,25 @@ pub fn record(device_id: Option<&str>, seconds: u32) -> Result<Recording, String
         sample_rate,
         channels: out_channels,
     })
+}
+
+pub fn check_duration(seconds: u32) -> Result<(), String> {
+    if (1..=30).contains(&seconds) {
+        Ok(())
+    } else {
+        Err(format!("録音時間は 1〜30 秒にしてください: {seconds}"))
+    }
+}
+
+/// 無音の録音を AI に送っても意味が無いので、エラーにする。
+pub fn check_not_silent(peak_dbfs: f32) -> Result<(), String> {
+    if peak_dbfs >= SILENCE_THRESHOLD_DBFS {
+        Ok(())
+    } else {
+        Err(format!(
+            "録音がほぼ無音でした (ピーク {peak_dbfs:.1} dBFS)。ギターを弾きながら録音し、入力デバイスが正しいか確かめてください"
+        ))
+    }
 }
 
 fn build<T>(
@@ -220,6 +233,41 @@ mod tests {
     fn peak_in_dbfs() {
         assert!((peak_dbfs(&[0.0, -0.5, 0.25]) - (-6.0206)).abs() < 0.01);
         assert_eq!(peak_dbfs(&[0.0, 0.0]), f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn duration_range() {
+        assert!(check_duration(0).is_err());
+        assert!(check_duration(1).is_ok());
+        assert!(check_duration(30).is_ok());
+        assert!(check_duration(31).is_err());
+    }
+
+    #[test]
+    fn silence_threshold() {
+        assert!(check_not_silent(-12.0).is_ok());
+        assert!(check_not_silent(SILENCE_THRESHOLD_DBFS).is_ok());
+        assert!(check_not_silent(SILENCE_THRESHOLD_DBFS - 0.1).is_err());
+        assert!(check_not_silent(f32::NEG_INFINITY).is_err(), "完全な無音");
+        // ギターの普通の録音 (-30 dBFS 程度) を無音と誤判定しない
+        assert!(check_not_silent(-30.0).is_ok());
+    }
+
+    #[test]
+    fn wav_clips_out_of_range_samples() {
+        let wav = encode_wav(&[2.0, -2.0, 0.0], 1, 48_000).unwrap();
+        let samples: Vec<i16> = hound::WavReader::new(Cursor::new(wav))
+            .unwrap()
+            .samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(samples[0], i16::MAX);
+        assert!(
+            samples[1] <= -i16::MAX,
+            "負の側も飽和させる: {}",
+            samples[1]
+        );
+        assert_eq!(samples[2], 0);
     }
 
     #[test]
