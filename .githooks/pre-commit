@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# 検査が落ちる状態ではコミットさせない。
+# 有効にするには: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/check.sh"

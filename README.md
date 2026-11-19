@@ -50,6 +50,8 @@ AI がスクショから読んだ変更前の値を控えておき、「戻す�
 
 ```sh
 npm install
+git config core.hooksPath .githooks    # コミット前に npm run check を走らせる (clone ごとに 1 回)
+npm run check                          # 型検査・整形・lint・テストをまとめて走らせる
 npm run tauri dev                      # 開発起動
 npm run build                          # フロントエンドの型検査とビルド
 (cd src-tauri && cargo test)           # 単体テスト
