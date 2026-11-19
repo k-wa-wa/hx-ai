@@ -105,9 +105,7 @@ pub fn record(device_id: Option<&str>, seconds: u32) -> Result<Recording, String
     }
     let samples = std::mem::take(&mut *buffer.lock().map_err(|e| e.to_string())?);
     if samples.is_empty() {
-        return Err(
-            "録音データが空です。マイクの権限と入力デバイスを確かめてください".to_string(),
-        );
+        return Err("録音データが空です。マイクの権限と入力デバイスを確かめてください".to_string());
     }
 
     let out_channels = in_channels.clamp(1, MAX_OUTPUT_CHANNELS);
@@ -186,8 +184,8 @@ pub fn encode_wav(samples: &[f32], channels: u16, sample_rate: u32) -> Result<Ve
     };
     let mut cursor = Cursor::new(Vec::new());
     {
-        let mut writer =
-            hound::WavWriter::new(&mut cursor, spec).map_err(|e| format!("WAV を作れません: {e}"))?;
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)
+            .map_err(|e| format!("WAV を作れません: {e}"))?;
         for &s in samples {
             writer
                 .write_sample(s.clamp(-1.0, 1.0).to_sample::<i16>())
@@ -207,7 +205,9 @@ mod tests {
     #[test]
     fn select_first_two_of_six_channels() {
         // 6ch × 2 フレーム
-        let s = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0];
+        let s = [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+        ];
         assert_eq!(select_channels(&s, 6, 2), vec![1.0, 2.0, 11.0, 12.0]);
     }
 

@@ -222,12 +222,17 @@ fn purpose_text(input: &RequestInput) -> String {
             let mut t = String::new();
             t.push_str("ユーザーの指示: ");
             if instruction.trim().is_empty() {
-                t.push_str("(指示なし。リファレンスに近づけるか、録音を聴いて改善点を提案すること)");
+                t.push_str(
+                    "(指示なし。リファレンスに近づけるか、録音を聴いて改善点を提案すること)",
+                );
             } else {
                 t.push_str(instruction.trim());
             }
             t.push('\n');
-            match (input.reference_audio.is_some(), input.recording_wav.is_some()) {
+            match (
+                input.reference_audio.is_some(),
+                input.recording_wav.is_some(),
+            ) {
                 (true, true) => t.push_str(
                     "1 つ目の音声がリファレンス (目標の音)、2 つ目の音声が現在の録音である。\n",
                 ),
@@ -317,10 +322,12 @@ fn strip_code_fence(s: &str) -> &str {
 
 /// Chat Completions の応答本文から AI の JSON を取り出す。
 pub fn parse_response(body: &Value) -> Result<AiResponse, String> {
-    let choice = body
-        .get("choices")
-        .and_then(|c| c.get(0))
-        .ok_or_else(|| format!("応答に choices がありません: {}", truncate(&body.to_string(), 500)))?;
+    let choice = body.get("choices").and_then(|c| c.get(0)).ok_or_else(|| {
+        format!(
+            "応答に choices がありません: {}",
+            truncate(&body.to_string(), 500)
+        )
+    })?;
     let content = choice
         .pointer("/message/content")
         .and_then(Value::as_str)
@@ -352,7 +359,8 @@ pub fn is_numeric_value(s: &str) -> bool {
     let t = s.trim();
     !t.is_empty()
         && t.len() <= 12
-        && t.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
+        && t.chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
         && t.parse::<f64>().is_ok_and(f64::is_finite)
 }
 
@@ -372,7 +380,10 @@ pub fn validate(resp: &AiResponse, purpose: &Purpose, last_round: bool) -> Resul
     for (i, a) in resp.actions.iter().enumerate() {
         let label = format!("操作 {} ({} / {})", i + 1, a.block, a.parameter);
         if !(0.0..=1000.0).contains(&a.x) || !(0.0..=1000.0).contains(&a.y) {
-            return Err(format!("{label} の座標が 0〜1000 の範囲外です: ({}, {})", a.x, a.y));
+            return Err(format!(
+                "{label} の座標が 0〜1000 の範囲外です: ({}, {})",
+                a.x, a.y
+            ));
         }
         match a.kind {
             ActionKind::SetValue => {
@@ -394,9 +405,7 @@ pub fn validate(resp: &AiResponse, purpose: &Purpose, last_round: bool) -> Resul
     }
     if let Purpose::Revert { targets } = purpose {
         for a in &set_values {
-            let expected = targets
-                .iter()
-                .any(|t| t.value.trim() == a.value.trim());
+            let expected = targets.iter().any(|t| t.value.trim() == a.value.trim());
             if !expected {
                 return Err(format!(
                     "Undo の応答に、戻す値の一覧に無い値が含まれています ({} / {} = {})。実行しません",
@@ -461,7 +470,10 @@ pub async fn call(
             .map_err(|e| format!("AI API の応答を読めません: {}", error_chain(&e)))?;
         if status.is_success() {
             let json: Value = serde_json::from_str(&text).map_err(|e| {
-                format!("AI API の応答が JSON ではありません: {e}: {}", truncate(&text, 500))
+                format!(
+                    "AI API の応答が JSON ではありません: {e}: {}",
+                    truncate(&text, 500)
+                )
             })?;
             return parse_response(&json);
         }
@@ -510,7 +522,9 @@ mod tests {
         }
     }
 
-    const ADJUST: Purpose = Purpose::Adjust { instruction: "太く" };
+    const ADJUST: Purpose = Purpose::Adjust {
+        instruction: "太く",
+    };
 
     #[test]
     fn retryable_statuses() {
@@ -524,7 +538,10 @@ mod tests {
 
     #[test]
     fn audio_format_from_path() {
-        assert_eq!(AudioFormat::from_path("/a/b.WAV").unwrap(), AudioFormat::Wav);
+        assert_eq!(
+            AudioFormat::from_path("/a/b.WAV").unwrap(),
+            AudioFormat::Wav
+        );
         assert_eq!(AudioFormat::from_path("x.mp3").unwrap(), AudioFormat::Mp3);
         assert!(AudioFormat::from_path("x.m4a").is_err());
     }
@@ -534,7 +551,16 @@ mod tests {
         for ok in ["6.5", "-3.0", "40", "+1", "0"] {
             assert!(is_numeric_value(ok), "{ok}");
         }
-        for ng in ["", "6.5dB", "1/8", "On", "6 5", "1e3", "--", "1234567890123"] {
+        for ng in [
+            "",
+            "6.5dB",
+            "1/8",
+            "On",
+            "6 5",
+            "1e3",
+            "--",
+            "1234567890123",
+        ] {
             assert!(!is_numeric_value(ng), "{ng}");
         }
     }
@@ -560,7 +586,10 @@ mod tests {
 
     #[test]
     fn validate_rejects_too_many_actions() {
-        let r = resp(vec![action(ActionKind::SetValue, "1"); MAX_SET_VALUE_ACTIONS + 1]);
+        let r = resp(vec![
+            action(ActionKind::SetValue, "1");
+            MAX_SET_VALUE_ACTIONS + 1
+        ]);
         assert!(validate(&r, &ADJUST, false).is_err());
     }
 
@@ -587,8 +616,22 @@ mod tests {
             value: "5.0".into(),
         }];
         let purpose = Purpose::Revert { targets: &targets };
-        assert!(validate(&resp(vec![action(ActionKind::SetValue, "5.0")]), &purpose, false).is_ok());
-        assert!(validate(&resp(vec![action(ActionKind::SetValue, "7.0")]), &purpose, false).is_err());
+        assert!(
+            validate(
+                &resp(vec![action(ActionKind::SetValue, "5.0")]),
+                &purpose,
+                false
+            )
+            .is_ok()
+        );
+        assert!(
+            validate(
+                &resp(vec![action(ActionKind::SetValue, "7.0")]),
+                &purpose,
+                false
+            )
+            .is_err()
+        );
     }
 
     fn input<'a>(purpose: Purpose<'a>, history: &'a [ChatTurn]) -> RequestInput<'a> {
@@ -655,7 +698,12 @@ mod tests {
             .as_array()
             .unwrap()
             .clone();
-        assert!(content[0]["text"].as_str().unwrap().contains("Amp / Bass を 5.0 に戻す"));
+        assert!(
+            content[0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Amp / Bass を 5.0 に戻す")
+        );
         assert_eq!(content.len(), 2, "テキストと画像だけ");
     }
 
@@ -670,7 +718,8 @@ mod tests {
 
     #[test]
     fn parse_response_strips_code_fence() {
-        let content = "```json\n{\"explanation\":\"x\",\"actions\":[],\"needs_another_round\":false}\n```";
+        let content =
+            "```json\n{\"explanation\":\"x\",\"actions\":[],\"needs_another_round\":false}\n```";
         let body = json!({ "choices": [{ "message": { "content": content } }] });
         assert!(parse_response(&body).unwrap().actions.is_empty());
     }

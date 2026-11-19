@@ -190,7 +190,10 @@ mod tests {
         let env = env_with(&[]);
         let err = StoredSettings::default().resolve(&env).unwrap_err();
         assert!(err.contains("OPENAI_API_KEY"));
-        assert_eq!(StoredSettings::default().view(&env).api_key_source, "missing");
+        assert_eq!(
+            StoredSettings::default().view(&env).api_key_source,
+            "missing"
+        );
     }
 
     #[test]

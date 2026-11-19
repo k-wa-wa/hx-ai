@@ -73,7 +73,9 @@ pub fn find_target_window(app_name: &str) -> Result<TargetWindow, String> {
         }
     }
     best.ok_or_else(|| {
-        format!("「{app_name}」のウィンドウが見つかりません。HX Edit を起動し、画面に表示してください")
+        format!(
+            "「{app_name}」のウィンドウが見つかりません。HX Edit を起動し、画面に表示してください"
+        )
     })
 }
 
@@ -109,7 +111,9 @@ pub fn capture(app_name: &str) -> Result<Screenshot, String> {
         .find(|w| w.id().ok() == Some(target.window_id))
         .ok_or_else(|| "キャプチャ直前に HX Edit のウィンドウが消えました".to_string())?;
     let image = window.capture_image().map_err(|e| {
-        format!("HX Edit のウィンドウをキャプチャできません (画面収録の権限を確かめてください): {e}")
+        format!(
+            "HX Edit のウィンドウをキャプチャできません (画面収録の権限を確かめてください): {e}"
+        )
     })?;
     let (width, height) = image.dimensions();
     if width == 0 || height == 0 {

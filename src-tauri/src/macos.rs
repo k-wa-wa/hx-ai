@@ -111,7 +111,9 @@ pub fn open_settings(kind: &str) -> Result<(), String> {
     if status.success() {
         Ok(())
     } else {
-        Err(format!("システム設定を開けません (open の終了コード {status})"))
+        Err(format!(
+            "システム設定を開けません (open の終了コード {status})"
+        ))
     }
 }
 

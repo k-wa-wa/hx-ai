@@ -53,7 +53,9 @@ async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
         },
     );
     let started = std::time::Instant::now();
-    let resp = ai::call(&settings, &body, &|m| println!("{m}")).await.expect("API 呼び出し");
+    let resp = ai::call(&settings, &body, &|m| println!("{m}"))
+        .await
+        .expect("API 呼び出し");
     println!(
         "model={} elapsed={:.1}s\n{}",
         settings.model,
@@ -132,7 +134,11 @@ async fn ai_live_selects_hidden_block() {
     let resp = ask(purpose.clone(), Some(&wav)).await;
     ai::validate(&resp, &purpose, false).expect("検証");
     let last = resp.actions.last().expect("操作が無い");
-    assert_eq!(last.kind, ActionKind::SelectBlock, "最後にブロック選択が来るはず");
+    assert_eq!(
+        last.kind,
+        ActionKind::SelectBlock,
+        "最後にブロック選択が来るはず"
+    );
     assert!(resp.needs_another_round);
     assert!(
         near((last.x, last.y), DELAY_BLOCK),

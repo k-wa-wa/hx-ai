@@ -152,7 +152,11 @@ async fn run_rounds(
     let mut done_in_cycle: Vec<DoneAction> = Vec::new();
     for round in 1..=MAX_ROUNDS {
         report.rounds = round;
-        progress(app, "capture", format!("HX Edit を撮影中 ({round}/{MAX_ROUNDS})"));
+        progress(
+            app,
+            "capture",
+            format!("HX Edit を撮影中 ({round}/{MAX_ROUNDS})"),
+        );
         let target_app = settings.target_app.clone();
         let shot = blocking(move || capture::capture(&target_app)).await?;
 
@@ -172,12 +176,12 @@ async fn run_rounds(
             },
         );
         let retry_app = app.clone();
-        let resp: AiResponse = ai::call(settings, &body, &move |msg| {
-            progress(&retry_app, "ai", msg)
-        })
-        .await?;
+        let resp: AiResponse =
+            ai::call(settings, &body, &move |msg| progress(&retry_app, "ai", msg)).await?;
         if !resp.explanation.trim().is_empty() {
-            report.explanations.push(resp.explanation.trim().to_string());
+            report
+                .explanations
+                .push(resp.explanation.trim().to_string());
         }
         ai::validate(&resp, purpose, round == MAX_ROUNDS)?;
 
@@ -218,9 +222,9 @@ async fn run_rounds(
 pub fn restore_targets(changes: &[DoneAction]) -> Vec<RestoreTarget> {
     let mut out: Vec<RestoreTarget> = Vec::new();
     for c in changes.iter().filter(|c| c.kind == ActionKind::SetValue) {
-        let dup = out.iter().any(|t| {
-            norm(&t.block) == norm(&c.block) && norm(&t.parameter) == norm(&c.parameter)
-        });
+        let dup = out
+            .iter()
+            .any(|t| norm(&t.block) == norm(&c.block) && norm(&t.parameter) == norm(&c.parameter));
         if !dup {
             out.push(RestoreTarget {
                 block: c.block.clone(),
@@ -233,7 +237,10 @@ pub fn restore_targets(changes: &[DoneAction]) -> Vec<RestoreTarget> {
 }
 
 fn norm(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+    s.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Undo で実行した変更を、戻す値の一覧から消し込む。値が一致するものの中で、
@@ -258,7 +265,12 @@ pub fn mark_restored(remaining: &mut Vec<RestoreTarget>, done: &DoneAction) {
 fn summarize(changes: &[DoneAction]) -> String {
     changes
         .iter()
-        .map(|c| format!("{} / {}: {} → {}", c.block, c.parameter, c.previous_value, c.value))
+        .map(|c| {
+            format!(
+                "{} / {}: {} → {}",
+                c.block, c.parameter, c.previous_value, c.value
+            )
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -277,7 +289,11 @@ pub async fn run_cycle(
     let target_app = settings.target_app.clone();
     blocking(move || capture::find_target_window(&target_app)).await?;
 
-    progress(&app, "record", format!("{seconds} 秒録音中… ギターを弾いてください"));
+    progress(
+        &app,
+        "record",
+        format!("{seconds} 秒録音中… ギターを弾いてください"),
+    );
     let recording = blocking(move || crate::audio::record(device_id.as_deref(), seconds)).await?;
     progress(
         &app,
@@ -446,14 +462,28 @@ mod tests {
     #[test]
     fn mark_restored_prefers_name_match() {
         let mut remaining = vec![
-            RestoreTarget { block: "Amp".into(), parameter: "Bass".into(), value: "5.0".into() },
-            RestoreTarget { block: "Amp".into(), parameter: "Treble".into(), value: "5.0".into() },
+            RestoreTarget {
+                block: "Amp".into(),
+                parameter: "Bass".into(),
+                value: "5.0".into(),
+            },
+            RestoreTarget {
+                block: "Amp".into(),
+                parameter: "Treble".into(),
+                value: "5.0".into(),
+            },
         ];
-        mark_restored(&mut remaining, &done(ActionKind::SetValue, "Amp", "Treble", "4", "5.0"));
+        mark_restored(
+            &mut remaining,
+            &done(ActionKind::SetValue, "Amp", "Treble", "4", "5.0"),
+        );
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].parameter, "Bass");
         // 名前が違っても値が一致すれば消し込む
-        mark_restored(&mut remaining, &done(ActionKind::SetValue, "Amp", "Low", "4", "5.0"));
+        mark_restored(
+            &mut remaining,
+            &done(ActionKind::SetValue, "Amp", "Low", "4", "5.0"),
+        );
         assert!(remaining.is_empty());
     }
 

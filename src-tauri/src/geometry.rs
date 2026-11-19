@@ -167,7 +167,13 @@ mod tests {
         let p = normalized_to_screen(WIN, 500.0, 500.0).unwrap();
         assert_eq!(p, Point { x: 700.0, y: 450.0 });
         let p = normalized_to_screen(WIN, 1000.0, 1000.0).unwrap();
-        assert_eq!(p, Point { x: 1300.0, y: 850.0 });
+        assert_eq!(
+            p,
+            Point {
+                x: 1300.0,
+                y: 850.0
+            }
+        );
     }
 
     #[test]
@@ -186,7 +192,16 @@ mod tests {
     fn inside_window_rejects_outside_and_title_bar() {
         // 外側
         assert!(ensure_inside_window(WIN, Point { x: 99.0, y: 300.0 }).is_err());
-        assert!(ensure_inside_window(WIN, Point { x: 1300.0, y: 300.0 }).is_err());
+        assert!(
+            ensure_inside_window(
+                WIN,
+                Point {
+                    x: 1300.0,
+                    y: 300.0
+                }
+            )
+            .is_err()
+        );
         assert!(ensure_inside_window(WIN, Point { x: 500.0, y: 850.0 }).is_err());
         // タイトルバー
         let err = ensure_inside_window(WIN, Point { x: 500.0, y: 60.0 }).unwrap_err();
@@ -200,7 +215,10 @@ mod tests {
         assert!(ensure_same_geometry(WIN, WIN).is_ok());
         let moved = Rect { x: 150.0, ..WIN };
         assert!(ensure_same_geometry(WIN, moved).is_err());
-        let resized = Rect { width: 1000.0, ..WIN };
+        let resized = Rect {
+            width: 1000.0,
+            ..WIN
+        };
         assert!(ensure_same_geometry(WIN, resized).is_err());
     }
 
@@ -216,18 +234,51 @@ mod tests {
     #[test]
     fn topmost_ok_when_target_is_in_front() {
         let windows = vec![
-            sw(1, 10, "Menubar", Rect { x: 0.0, y: 0.0, width: 2000.0, height: 25.0 }),
+            sw(
+                1,
+                10,
+                "Menubar",
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 2000.0,
+                    height: 25.0,
+                },
+            ),
             sw(7, 20, "HX Edit", WIN),
-            sw(3, 30, "Finder", Rect { x: 0.0, y: 0.0, width: 2000.0, height: 2000.0 }),
+            sw(
+                3,
+                30,
+                "Finder",
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 2000.0,
+                    height: 2000.0,
+                },
+            ),
         ];
         assert!(ensure_topmost_at(&windows, 7, Point { x: 700.0, y: 600.0 }).is_ok());
     }
 
     #[test]
     fn topmost_rejects_overlapping_window() {
-        let companion = Rect { x: 1100.0, y: 100.0, width: 360.0, height: 720.0 };
+        let companion = Rect {
+            x: 1100.0,
+            y: 100.0,
+            width: 360.0,
+            height: 720.0,
+        };
         let windows = vec![sw(9, 99, "hx-ai", companion), sw(7, 20, "HX Edit", WIN)];
-        let err = ensure_topmost_at(&windows, 7, Point { x: 1200.0, y: 600.0 }).unwrap_err();
+        let err = ensure_topmost_at(
+            &windows,
+            7,
+            Point {
+                x: 1200.0,
+                y: 600.0,
+            },
+        )
+        .unwrap_err();
         assert!(err.contains("hx-ai"));
         // 重なっていない場所なら通る
         assert!(ensure_topmost_at(&windows, 7, Point { x: 500.0, y: 600.0 }).is_ok());
