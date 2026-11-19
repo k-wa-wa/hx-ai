@@ -177,6 +177,28 @@ describe("元に戻す", () => {
     expect(b.callsTo("undo_last")).toHaveLength(1);
   });
 
+  it("起動時に Rust 側に残っている Undo 履歴の数を取りに行く", async () => {
+    setupBackend({ undo_depth: () => 2 });
+    await renderApp();
+    expect(await screen.findByRole("button", { name: "↶ 戻す (2)" })).toBeEnabled();
+  });
+
+  it("戻せなかった値を表示する", async () => {
+    setupBackend({
+      undo_depth: () => 1,
+      undo_last: () =>
+        report({
+          explanations: [],
+          error: "1 個の値を戻せませんでした",
+          not_restored: [{ block: "Amp", parameter: "Bass", value: "5.0" }],
+          undo_depth: 1,
+        }),
+    });
+    const user = await renderApp();
+    await waitFor(() => expect(screen.getByRole("button", { name: /戻す/ })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: /戻す/ }));
+    expect(await screen.findByText("5.0 に戻せていない")).toBeInTheDocument();
+  });
 });
 
 describe("設定", () => {

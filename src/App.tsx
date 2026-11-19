@@ -94,6 +94,8 @@ export default function App() {
     (async () => {
       await refreshPermissions();
       await refreshDevices();
+      // 画面を読み込み直しても、Rust 側に残っている Undo 履歴を使えるようにする
+      api.undoDepth().then(setUndoDepth).catch((e) => pushError(errorText(e)));
       try {
         const s = await api.getSettings();
         setSettings(s);
