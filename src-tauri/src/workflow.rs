@@ -1,17 +1,20 @@
 //! 1 サイクル (録音 → キャプチャ → AI → 自動操作) と Undo の流れ。
+//!
+//! キャプチャ・AI・自動操作は `Engine` トレイトの向こうに置き、テストでは偽物に差し替える。
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
+use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use crate::ai::{
-    self, ActionKind, AiResponse, AudioFormat, ChatTurn, DoneAction, Purpose, RequestInput,
-    RestoreTarget,
+    self, ActionKind, AiAction, AiResponse, AudioFormat, ChatTurn, DoneAction, Purpose,
+    RequestInput, RestoreTarget,
 };
-use crate::automation;
-use crate::capture;
+use crate::automation::{self, Outcome};
+use crate::capture::{self, Screenshot, TargetWindow};
 use crate::config::{self, ResolvedSettings, StoredSettings};
 use crate::macos;
 
@@ -40,6 +43,17 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn new(settings_path: std::path::PathBuf, stored: StoredSettings) -> Self {
+        Self {
+            settings_path,
+            stored: Mutex::new(stored),
+            reference: Mutex::new(None),
+            undo_stack: Mutex::new(Vec::new()),
+            chat: Mutex::new(Vec::new()),
+            busy: AtomicBool::new(false),
+        }
+    }
+
     pub fn resolved_settings(&self) -> Result<ResolvedSettings, String> {
         self.stored
             .lock()
@@ -83,18 +97,45 @@ pub struct CycleReport {
     pub not_restored: Vec<RestoreTarget>,
 }
 
+impl CycleReport {
+    fn empty(recording_peak_dbfs: Option<f32>) -> Self {
+        Self {
+            explanations: vec![],
+            changes: vec![],
+            error: None,
+            recording_peak_dbfs,
+            rounds: 0,
+            undo_depth: 0,
+            not_restored: vec![],
+        }
+    }
+}
+
+/// サイクルが外の世界に対して行うこと。
+#[allow(async_fn_in_trait)]
+pub trait Engine {
+    fn progress(&self, stage: &str, message: String);
+    async fn capture(&mut self) -> Result<Screenshot, String>;
+    async fn ask(&mut self, body: &Value) -> Result<AiResponse, String>;
+    async fn execute(
+        &mut self,
+        actions: Vec<AiAction>,
+        window: TargetWindow,
+    ) -> Result<Outcome, String>;
+}
+
 #[derive(Clone, Serialize)]
 struct Progress {
     stage: String,
     message: String,
 }
 
-fn progress(app: &AppHandle, stage: &str, message: impl Into<String>) {
+fn emit_progress(app: &AppHandle, stage: &str, message: String) {
     let _ = app.emit(
         "progress",
         Progress {
             stage: stage.to_string(),
-            message: message.into(),
+            message,
         },
     );
 }
@@ -105,6 +146,46 @@ async fn blocking<T: Send + 'static>(
     tauri::async_runtime::spawn_blocking(f)
         .await
         .map_err(|e| format!("内部エラー: {e}"))?
+}
+
+/// 本物: xcap で撮り、AI API を呼び、enigo で操作する。
+struct TauriEngine {
+    app: AppHandle,
+    settings: ResolvedSettings,
+}
+
+impl Engine for TauriEngine {
+    fn progress(&self, stage: &str, message: String) {
+        emit_progress(&self.app, stage, message);
+    }
+
+    async fn capture(&mut self) -> Result<Screenshot, String> {
+        let target_app = self.settings.target_app.clone();
+        blocking(move || capture::capture(&target_app)).await
+    }
+
+    async fn ask(&mut self, body: &Value) -> Result<AiResponse, String> {
+        let app = self.app.clone();
+        ai::call(&self.settings, body, &move |msg| {
+            emit_progress(&app, "ai", msg)
+        })
+        .await
+    }
+
+    async fn execute(
+        &mut self,
+        actions: Vec<AiAction>,
+        window: TargetWindow,
+    ) -> Result<Outcome, String> {
+        blocking(move || {
+            Ok(automation::execute(
+                &mut automation::MacDesktop::default(),
+                &actions,
+                &window,
+            ))
+        })
+        .await
+    }
 }
 
 /// 処理を始める前に権限を確かめる。弾き終わってから失敗させないため、録音の前に見る。
@@ -141,9 +222,9 @@ struct CycleInput<'a> {
 
 /// 撮影 → AI → 検証 → 実行を、ブロック選択が続く限り繰り返す。
 /// 途中で止まっても、それまでの結果は `report` に残す。
-async fn run_rounds(
-    app: &AppHandle,
-    settings: &ResolvedSettings,
+async fn run_rounds<E: Engine>(
+    engine: &mut E,
+    model: &str,
     input: &CycleInput<'_>,
     report: &mut CycleReport,
     mut on_done: impl FnMut(&DoneAction),
@@ -152,17 +233,15 @@ async fn run_rounds(
     let mut done_in_cycle: Vec<DoneAction> = Vec::new();
     for round in 1..=MAX_ROUNDS {
         report.rounds = round;
-        progress(
-            app,
+        engine.progress(
             "capture",
             format!("HX Edit を撮影中 ({round}/{MAX_ROUNDS})"),
         );
-        let target_app = settings.target_app.clone();
-        let shot = blocking(move || capture::capture(&target_app)).await?;
+        let shot = engine.capture().await?;
 
-        progress(app, "ai", format!("AI ({}) に問い合わせ中", settings.model));
+        engine.progress("ai", format!("AI ({model}) に問い合わせ中"));
         let body = ai::build_request(
-            &settings.model,
+            model,
             &RequestInput {
                 purpose: purpose.clone(),
                 history: input.history,
@@ -175,9 +254,7 @@ async fn run_rounds(
                 done_in_this_cycle: &done_in_cycle,
             },
         );
-        let retry_app = app.clone();
-        let resp: AiResponse =
-            ai::call(settings, &body, &move |msg| progress(&retry_app, "ai", msg)).await?;
+        let resp = engine.ask(&body).await?;
         if !resp.explanation.trim().is_empty() {
             report
                 .explanations
@@ -188,21 +265,13 @@ async fn run_rounds(
         if resp.actions.is_empty() {
             return Ok(());
         }
-        progress(
-            app,
+        engine.progress(
             "operate",
             format!("HX Edit を操作中 ({} 件)", resp.actions.len()),
         );
-        let actions = resp.actions.clone();
-        let window = shot.window.clone();
-        let outcome = blocking(move || {
-            Ok(automation::execute(
-                &mut automation::MacDesktop::default(),
-                &actions,
-                &window,
-            ))
-        })
-        .await?;
+        let outcome = engine
+            .execute(resp.actions.clone(), shot.window.clone())
+            .await?;
         for d in &outcome.done {
             if d.kind == ActionKind::SetValue {
                 report.changes.push(d.clone());
@@ -282,35 +351,15 @@ fn summarize(changes: &[DoneAction]) -> String {
         .join("\n")
 }
 
-pub async fn run_cycle(
-    app: AppHandle,
+/// 録音済みの音を使って調整する。途中で止まっても、実行した分は Undo できるように残す。
+pub async fn adjust<E: Engine>(
+    engine: &mut E,
     state: &AppState,
-    instruction: String,
-    device_id: Option<String>,
-    seconds: u32,
+    model: &str,
+    instruction: &str,
+    recording_wav: &[u8],
+    recording_peak_dbfs: f32,
 ) -> Result<CycleReport, String> {
-    let _busy = BusyGuard::acquire(&state.busy)?;
-    let settings = state.resolved_settings()?;
-    ensure_permissions(true)?;
-    // 録音の前に HX Edit があるかを確かめる (弾き終わってから失敗させない)
-    let target_app = settings.target_app.clone();
-    blocking(move || capture::find_target_window(&target_app)).await?;
-
-    progress(
-        &app,
-        "record",
-        format!("{seconds} 秒録音中… ギターを弾いてください"),
-    );
-    let recording = blocking(move || crate::audio::record(device_id.as_deref(), seconds)).await?;
-    progress(
-        &app,
-        "record",
-        format!(
-            "録音完了 ({} Hz / {}ch, ピーク {:.1} dBFS)",
-            recording.sample_rate, recording.channels, recording.peak_dbfs
-        ),
-    );
-
     let reference = state
         .reference
         .lock()
@@ -319,27 +368,16 @@ pub async fn run_cycle(
         .map(|r| (r.bytes.clone(), r.format));
     let history = state.chat.lock().map_err(|e| e.to_string())?.clone();
 
-    let mut report = CycleReport {
-        explanations: vec![],
-        changes: vec![],
-        error: None,
-        recording_peak_dbfs: Some(recording.peak_dbfs),
-        rounds: 0,
-        undo_depth: 0,
-        not_restored: vec![],
-    };
+    let mut report = CycleReport::empty(Some(recording_peak_dbfs));
     let input = CycleInput {
-        purpose: Purpose::Adjust {
-            instruction: &instruction,
-        },
+        purpose: Purpose::Adjust { instruction },
         history: &history,
         reference: reference.as_ref().map(|(b, f)| (b.as_slice(), *f)),
-        recording: Some(&recording.wav),
+        recording: Some(recording_wav),
     };
-    let result = run_rounds(&app, &settings, &input, &mut report, |_| {}).await;
+    let result = run_rounds(engine, model, &input, &mut report, |_| {}).await;
     report.error = result.err();
 
-    // 途中で止まっても、実行した分は Undo できるように残す
     let targets = restore_targets(&report.changes);
     if !targets.is_empty() {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
@@ -355,7 +393,7 @@ pub async fn run_cycle(
             text: if instruction.trim().is_empty() {
                 "(指示なしで調整を依頼)".into()
             } else {
-                instruction.clone()
+                instruction.to_string()
             },
         });
         let mut text = report.explanations.join("\n");
@@ -372,14 +410,15 @@ pub async fn run_cycle(
         });
     }
     report.undo_depth = state.undo_depth();
-    progress(&app, "done", "完了");
     Ok(report)
 }
 
-pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, String> {
-    let _busy = BusyGuard::acquire(&state.busy)?;
-    let settings = state.resolved_settings()?;
-    ensure_permissions(false)?;
+/// 直前のサイクルの変更を元に戻す。戻しきれなかった値は、もう一度 Undo できるように残す。
+pub async fn revert<E: Engine>(
+    engine: &mut E,
+    state: &AppState,
+    model: &str,
+) -> Result<CycleReport, String> {
     let targets = state
         .undo_stack
         .lock()
@@ -388,15 +427,7 @@ pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, 
         .cloned()
         .ok_or_else(|| "戻せる変更がありません".to_string())?;
 
-    let mut report = CycleReport {
-        explanations: vec![],
-        changes: vec![],
-        error: None,
-        recording_peak_dbfs: None,
-        rounds: 0,
-        undo_depth: 0,
-        not_restored: vec![],
-    };
+    let mut report = CycleReport::empty(None);
     let mut remaining = targets.clone();
     let input = CycleInput {
         purpose: Purpose::Revert { targets: &targets },
@@ -404,7 +435,7 @@ pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, 
         reference: None,
         recording: None,
     };
-    let result = run_rounds(&app, &settings, &input, &mut report, |d| {
+    let result = run_rounds(engine, model, &input, &mut report, |d| {
         mark_restored(&mut remaining, d)
     })
     .await;
@@ -413,7 +444,6 @@ pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, 
     {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
         stack.pop();
-        // 戻しきれなかった値は、もう一度 Undo できるように残す
         if !remaining.is_empty() {
             stack.push(remaining.clone());
         }
@@ -433,8 +463,68 @@ pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, 
         });
     }
     report.undo_depth = state.undo_depth();
-    progress(&app, "done", "完了");
     Ok(report)
+}
+
+pub async fn run_cycle(
+    app: AppHandle,
+    state: &AppState,
+    instruction: String,
+    device_id: Option<String>,
+    seconds: u32,
+) -> Result<CycleReport, String> {
+    let _busy = BusyGuard::acquire(&state.busy)?;
+    let settings = state.resolved_settings()?;
+    ensure_permissions(true)?;
+    // 録音の前に HX Edit があるかを確かめる (弾き終わってから失敗させない)
+    let target_app = settings.target_app.clone();
+    blocking(move || capture::find_target_window(&target_app)).await?;
+
+    emit_progress(
+        &app,
+        "record",
+        format!("{seconds} 秒録音中… ギターを弾いてください"),
+    );
+    let recording = blocking(move || crate::audio::record(device_id.as_deref(), seconds)).await?;
+    emit_progress(
+        &app,
+        "record",
+        format!(
+            "録音完了 ({} Hz / {}ch, ピーク {:.1} dBFS)",
+            recording.sample_rate, recording.channels, recording.peak_dbfs
+        ),
+    );
+
+    let model = settings.model.clone();
+    let mut engine = TauriEngine {
+        app: app.clone(),
+        settings,
+    };
+    let report = adjust(
+        &mut engine,
+        state,
+        &model,
+        &instruction,
+        &recording.wav,
+        recording.peak_dbfs,
+    )
+    .await;
+    emit_progress(&app, "done", "完了".into());
+    report
+}
+
+pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, String> {
+    let _busy = BusyGuard::acquire(&state.busy)?;
+    let settings = state.resolved_settings()?;
+    ensure_permissions(false)?;
+    let model = settings.model.clone();
+    let mut engine = TauriEngine {
+        app: app.clone(),
+        settings,
+    };
+    let report = revert(&mut engine, state, &model).await;
+    emit_progress(&app, "done", "完了".into());
+    report
 }
 
 #[cfg(test)]

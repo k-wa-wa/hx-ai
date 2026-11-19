@@ -10,9 +10,8 @@ mod config;
 mod geometry;
 mod macos;
 mod workflow;
-
-use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
+#[cfg(test)]
+mod workflow_test;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
@@ -175,14 +174,7 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             let settings_path = config::settings_path(&config_dir);
             let stored = config::load(&settings_path)?;
-            app.manage(AppState {
-                settings_path,
-                stored: Mutex::new(stored),
-                reference: Mutex::new(None),
-                undo_stack: Mutex::new(Vec::new()),
-                chat: Mutex::new(Vec::new()),
-                busy: AtomicBool::new(false),
-            });
+            app.manage(AppState::new(settings_path, stored));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
