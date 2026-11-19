@@ -173,15 +173,3 @@ pub fn activate(pid: i32) -> Result<(), String> {
         frontmost_name()
     ))
 }
-
-/// 現在の最前面が指定したプロセスであることを確かめる。
-pub fn ensure_frontmost(pid: i32) -> Result<(), String> {
-    if frontmost_pid() == Some(pid) {
-        Ok(())
-    } else {
-        Err(format!(
-            "最前面のアプリが HX Edit ではありません ({})。操作を中断しました",
-            frontmost_name()
-        ))
-    }
-}

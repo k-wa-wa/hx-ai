@@ -195,7 +195,14 @@ async fn run_rounds(
         );
         let actions = resp.actions.clone();
         let window = shot.window.clone();
-        let outcome = blocking(move || Ok(automation::execute(&actions, &window))).await?;
+        let outcome = blocking(move || {
+            Ok(automation::execute(
+                &mut automation::MacDesktop::default(),
+                &actions,
+                &window,
+            ))
+        })
+        .await?;
         for d in &outcome.done {
             if d.kind == ActionKind::SetValue {
                 report.changes.push(d.clone());
