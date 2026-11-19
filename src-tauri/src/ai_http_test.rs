@@ -50,7 +50,13 @@ async fn call(
 ) -> (Result<ai::AiResponse, String>, Vec<String>) {
     let (log, on_retry) = recorder();
     let s = settings(&format!("{}{base_suffix}", server.uri()));
-    let r = ai::call_with_delays(&s, &json!({ "model": "test-model" }), &NO_WAIT, &on_retry).await;
+    // 再試行の回数が壊れて無限に繰り返しても、すぐ失敗として分かるようにする
+    let r = tokio::time::timeout(
+        Duration::from_secs(5),
+        ai::call_with_delays(&s, &json!({ "model": "test-model" }), &NO_WAIT, &on_retry),
+    )
+    .await
+    .expect("再試行が終わらない");
     let retries = log.lock().unwrap().clone();
     (r, retries)
 }
