@@ -49,3 +49,4 @@ strip = true
 
 [dev-dependencies]
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6.5"

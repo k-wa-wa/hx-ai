@@ -1,5 +1,7 @@
 mod ai;
 #[cfg(test)]
+mod ai_http_test;
+#[cfg(test)]
 mod ai_live_test;
 mod audio;
 mod automation;

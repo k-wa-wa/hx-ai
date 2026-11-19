@@ -437,13 +437,23 @@ pub fn is_retryable_status(status: u16) -> bool {
 }
 
 /// 再試行するまでの待ち時間。要素の数が再試行の回数になる。
-const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(8)];
+pub(crate) const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(8)];
 
 /// API を呼び出して応答を返す。混雑 (429 / 5xx) のときだけ待って再試行し、
 /// 最後まで通らなければ最後のエラーを返す。`on_retry` には画面に出す文言を渡す。
 pub async fn call(
     settings: &ResolvedSettings,
     body: &Value,
+    on_retry: &(dyn Fn(String) + Send + Sync),
+) -> Result<AiResponse, String> {
+    call_with_delays(settings, body, &RETRY_DELAYS, on_retry).await
+}
+
+/// `call` の本体。テストでは待ち時間を 0 にして呼ぶ。
+pub(crate) async fn call_with_delays(
+    settings: &ResolvedSettings,
+    body: &Value,
+    retry_delays: &[Duration],
     on_retry: &(dyn Fn(String) + Send + Sync),
 ) -> Result<AiResponse, String> {
     let url = format!(
@@ -481,14 +491,14 @@ pub async fn call(
             "AI API がエラーを返しました (HTTP {status}): {}",
             truncate(&text, 800)
         );
-        match RETRY_DELAYS.get(attempt) {
+        match retry_delays.get(attempt) {
             Some(delay) if is_retryable_status(status.as_u16()) => {
                 on_retry(format!(
                     "AI API が混雑しています (HTTP {}). {} 秒後に再試行します ({}/{})",
                     status.as_u16(),
                     delay.as_secs(),
                     attempt + 1,
-                    RETRY_DELAYS.len()
+                    retry_delays.len()
                 ));
                 tokio::time::sleep(*delay).await;
                 attempt += 1;
