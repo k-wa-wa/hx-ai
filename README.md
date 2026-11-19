@@ -59,6 +59,8 @@ npm run build                          # フロントエンドの型検査とビ
 npm run tauri build -- --bundles app   # .app を作る
 ```
 
+テストの置き場所と変異テスト (cargo mutants) の使い方は [AGENTS.md](AGENTS.md) にある。
+
 ### AI の結合テスト
 
 実際の API を呼ぶ (課金が発生する) ので既定では走らない。
