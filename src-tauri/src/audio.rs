@@ -133,7 +133,10 @@ fn open(device_id: Option<&str>) -> Result<Opened, String> {
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
 
-    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    // 録音中に配列を伸ばすと、オーディオのスレッドで数 MB のコピーが起きて処理が間に合わなくなる
+    // (macOS が過負荷 = Xrun を知らせる)。上限の長さの分を先に確保しておく
+    let capacity = sample_rate as usize * channels as usize * (MAX_RECORD_SECONDS as usize + 1);
+    let buffer: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::with_capacity(capacity)));
     let (err_tx, err_rx) = mpsc::channel::<String>();
 
     let stream = match format {
@@ -171,10 +174,49 @@ where
                     buf.extend(data.iter().map(|s| s.to_sample::<f32>()));
                 }
             },
-            move |err| {
-                let _ = err_tx.send(err.to_string());
+            move |err: cpal::Error| {
+                if stops_recording(err.kind()) {
+                    let _ = err_tx.send(err.to_string());
+                } else {
+                    eprintln!("録音中の警告 (録音は続ける): {err}");
+                }
             },
             None,
         )
         .map_err(|e| format!("録音ストリームを作れません: {e}"))
+}
+
+/// 録音を失敗にするストリームのエラーか。音が一瞬途切れたかもしれない (Xrun)、
+/// 実時間の優先度を得られなかった、経路が切り替わった、は録音を続けられるので止めない。
+pub fn stops_recording(kind: cpal::ErrorKind) -> bool {
+    !matches!(
+        kind,
+        cpal::ErrorKind::Xrun | cpal::ErrorKind::RealtimeDenied | cpal::ErrorKind::DeviceChanged
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpal::ErrorKind;
+
+    #[test]
+    fn glitches_do_not_stop_recording() {
+        assert!(!stops_recording(ErrorKind::Xrun));
+        assert!(!stops_recording(ErrorKind::RealtimeDenied));
+        assert!(!stops_recording(ErrorKind::DeviceChanged));
+    }
+
+    #[test]
+    fn losing_the_device_stops_recording() {
+        for k in [
+            ErrorKind::DeviceNotAvailable,
+            ErrorKind::PermissionDenied,
+            ErrorKind::StreamInvalidated,
+            ErrorKind::BackendError,
+            ErrorKind::Other,
+        ] {
+            assert!(stops_recording(k), "{k:?}");
+        }
+    }
 }
