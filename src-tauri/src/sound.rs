@@ -54,8 +54,13 @@ pub fn check_duration(seconds: u32) -> Result<(), String> {
 }
 
 /// 無音の録音を AI に送っても意味が無いので、エラーにする。
+/// ピークがこれだけ小さければ無音とみなす。録音とリファレンスで同じ基準を使う。
+pub fn is_silent(peak_dbfs: f32) -> bool {
+    peak_dbfs < SILENCE_THRESHOLD_DBFS
+}
+
 pub fn check_not_silent(peak_dbfs: f32) -> Result<(), String> {
-    if peak_dbfs >= SILENCE_THRESHOLD_DBFS {
+    if !is_silent(peak_dbfs) {
         Ok(())
     } else {
         Err(format!(
@@ -256,7 +261,7 @@ impl ReferenceTrack {
         let to = (from + (REFERENCE_CLIP_SECONDS * rate) as usize).min(self.mono.len());
         let segment = &self.mono[from..to];
         let peak = peak_dbfs(segment);
-        if peak < SILENCE_THRESHOLD_DBFS {
+        if is_silent(peak) {
             return Err(format!(
                 "リファレンスの {} からの区間がほぼ無音です (ピーク {peak:.1} dBFS)。再生位置を変えて選び直してください",
                 format_time(start)

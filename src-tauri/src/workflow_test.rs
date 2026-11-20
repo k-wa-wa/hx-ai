@@ -553,6 +553,15 @@ async fn send_needs_instruction_or_recording() {
 }
 
 #[tokio::test]
+async fn send_with_only_a_recording_leaves_a_placeholder_in_history() {
+    let s = state();
+    *s.pending.lock().unwrap() = Some(recording());
+    let mut e = FakeEngine::new(vec![answer(vec![])]);
+    send(&mut e, &s, " ").await.unwrap();
+    assert_eq!(s.chat.lock().unwrap()[0].text, "(指示なしで調整を依頼)");
+}
+
+#[tokio::test]
 async fn send_without_recording_asks_with_screen_only() {
     let s = state();
     let mut e = FakeEngine::new(vec![answer(vec![])]);
@@ -747,6 +756,8 @@ async fn loop_tolerates_failures_but_stops_after_too_many_in_a_row() {
         e.iterations[3].report.error.as_deref(),
         Some("録音がほぼ無音でした")
     );
+    // 録音に失敗した回の報告にも、画面の「戻す」の数を合わせるための Undo の数を入れる
+    assert_eq!(e.iterations[3].report.undo_depth, 1);
 }
 
 #[tokio::test]
