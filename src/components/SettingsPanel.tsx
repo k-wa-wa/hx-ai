@@ -1,12 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, errorText, SettingsView } from "../api";
 
-const KEY_SOURCE: Record<SettingsView["api_key_source"], string> = {
-  settings: "この画面で保存したキーを使用中",
-  env: ".env / 環境変数の OPENAI_API_KEY を使用中",
-  missing: "API キーがありません",
-};
-
 export function SettingsPanel({
   view,
   onSaved,
@@ -53,10 +47,9 @@ export function SettingsPanel({
 
   return (
     <section className="panel">
-      <div className="panel-title">AI と操作対象の設定</div>
-      <p className="muted small">空欄の項目は .env / 環境変数、それも無ければ既定値を使う。</p>
+      <div className="panel-title">AI</div>
       <label className="field">
-        <span>API の base URL (OpenAI 互換)</span>
+        <span>base URL</span>
         <input
           value={baseUrl}
           placeholder={view?.effective_base_url}
@@ -78,16 +71,14 @@ export function SettingsPanel({
         <input
           type="password"
           value={apiKey}
-          placeholder={view?.stored.has_api_key ? "保存済み (変えるときだけ入力)" : "未保存"}
+          placeholder={
+            view?.stored.has_api_key ? "保存済み" : view?.api_key_source === "env" ? ".env (開発用)" : ""
+          }
           onChange={(e) => setApiKey(e.target.value)}
           disabled={clearKey}
         />
       </label>
-      {view && (
-        <div className={`small ${view.api_key_source === "missing" ? "warn" : "muted"}`}>
-          {KEY_SOURCE[view.api_key_source]}
-        </div>
-      )}
+      {view?.api_key_source === "missing" && <div className="small warn">API キーがありません</div>}
       {view?.stored.has_api_key && (
         <label className="check small">
           <input type="checkbox" checked={clearKey} onChange={(e) => setClearKey(e.target.checked)} />

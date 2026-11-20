@@ -10,15 +10,7 @@ export interface ChatMessage {
   meta?: string;
 }
 
-export function ChatLog({
-  messages,
-  progress,
-  emptyHint,
-}: {
-  messages: ChatMessage[];
-  progress: string | null;
-  emptyHint: string;
-}) {
+export function ChatLog({ messages, progress }: { messages: ChatMessage[]; progress: string | null }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth" });
@@ -26,9 +18,6 @@ export function ChatLog({
 
   return (
     <div className="chat">
-      {messages.length === 0 && (
-        <div className="muted small empty">{emptyHint}</div>
-      )}
       {messages.map((m) => (
         <div key={m.id} className={`msg ${m.role}`}>
           {m.text && <div className="msg-text">{m.text}</div>}

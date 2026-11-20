@@ -442,15 +442,7 @@ export default function App() {
         <ReferenceDrop disabled={busy} onError={pushError} />
       </section>
 
-      <ChatLog
-        messages={messages}
-        progress={progress}
-        emptyHint={
-          mode === "manual"
-            ? "HX Edit を横に並べ、「録音」を押してギターを弾く。止めたら指示を書いて送る。録音なしで指示だけ送ることもできる。"
-            : "ルーパーなどで音を出し続け、目標を書いて「自動ループを始める」を押す。録音 → 調整 を、AI が目標に届いたと判断するか上限の回数まで繰り返す。マウスに触ると止まる。"
-        }
-      />
+      <ChatLog messages={messages} progress={progress} />
 
       <footer className="composer">
         {mode === "manual" && pending && (
@@ -466,13 +458,7 @@ export default function App() {
         <textarea
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder={
-            mode === "manual"
-              ? "例: もっとハイを削って太く / ソロ用にディレイを足して"
-              : looping
-                ? "次の回から加える指示 (例: もう少し歪ませて)"
-                : "目標 (例: リファレンスに近づけて / 抜けの良いクランチに)"
-          }
+          placeholder={mode === "manual" ? "指示" : looping ? "追加の指示" : "目標"}
           rows={2}
           disabled={busy && !looping}
           onKeyDown={(e) => {
@@ -518,18 +504,13 @@ export default function App() {
             ↶ 戻す{undoDepth > 0 ? ` (${undoDepth})` : ""}
           </button>
         </div>
-        <div className="hint muted small">
-          <span>
-            {mode === "manual"
-              ? "⌘↩ で送信"
-              : `⌘↩ で${looping ? "指示を追加" : "開始"}`}
-          </span>
-          {messages.length > 0 && (
+        {messages.length > 0 && (
+          <div className="hint">
             <button className="link" onClick={clearChat} disabled={busy}>
               会話をリセット
             </button>
-          )}
-        </div>
+          </div>
+        )}
       </footer>
     </div>
   );

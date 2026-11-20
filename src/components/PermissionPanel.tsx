@@ -1,9 +1,9 @@
 import { api, errorText, PermissionKind, PermissionStatus } from "../api";
 
-const LABELS: Record<PermissionKind, { name: string; why: string }> = {
-  microphone: { name: "マイク", why: "HX Stomp の音を録音する" },
-  screen_recording: { name: "画面収録", why: "HX Edit の画面を撮る" },
-  accessibility: { name: "アクセシビリティ", why: "HX Edit の値を自動で入力する" },
+const LABELS: Record<PermissionKind, string> = {
+  microphone: "マイク",
+  screen_recording: "画面収録",
+  accessibility: "アクセシビリティ",
 };
 
 const KINDS: PermissionKind[] = ["microphone", "screen_recording", "accessibility"];
@@ -43,10 +43,7 @@ export function PermissionPanel({
         return (
           <div className="perm-row" key={k}>
             <span className={`dot ${s ?? "unknown"}`} />
-            <div className="perm-text">
-              <div>{LABELS[k].name}</div>
-              <div className="muted small">{LABELS[k].why}</div>
-            </div>
+            <div className="perm-text">{LABELS[k]}</div>
             {s === "granted" ? (
               <span className="muted small">許可済み</span>
             ) : (
@@ -57,9 +54,6 @@ export function PermissionPanel({
           </div>
         );
       })}
-      <p className="muted small">
-        「許可する」で出るダイアログか、開いたシステム設定で許可する。画面収録とアクセシビリティは、許可した後にアプリの再起動が必要なことがある。
-      </p>
     </section>
   );
 }
