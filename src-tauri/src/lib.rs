@@ -19,7 +19,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::ai::AudioFormat;
 use crate::config::{SettingsView, StoredSettings};
-use crate::workflow::{AppState, CycleReport, MAX_REFERENCE_BYTES, Reference};
+use crate::workflow::{AppState, CycleReport, Reference};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -37,6 +37,24 @@ struct ReferenceInfo {
     name: String,
     mime: String,
     size: usize,
+    /// 音源全体の長さ (秒)。
+    duration: f32,
+    /// AI に送る区間の開始位置と長さ (秒)。
+    clip_start: f32,
+    clip_seconds: f32,
+}
+
+impl From<&Reference> for ReferenceInfo {
+    fn from(r: &Reference) -> Self {
+        Self {
+            name: r.name.clone(),
+            mime: r.format.mime().to_string(),
+            size: r.bytes.len(),
+            duration: r.track.duration(),
+            clip_start: r.clip.start,
+            clip_seconds: r.clip.seconds,
+        }
+    }
 }
 
 #[tauri::command]
@@ -97,28 +115,33 @@ async fn find_target_window(state: State<'_, AppState>) -> Result<capture::Targe
 }
 
 #[tauri::command]
-fn set_reference(state: State<AppState>, path: String) -> Result<ReferenceInfo, String> {
+async fn set_reference(state: State<'_, AppState>, path: String) -> Result<ReferenceInfo, String> {
     let format = AudioFormat::from_path(&path)?;
-    let bytes =
-        std::fs::read(&path).map_err(|e| format!("音源ファイルを読めません ({path}): {e}"))?;
-    if bytes.len() > MAX_REFERENCE_BYTES {
-        return Err(format!(
-            "音源ファイルが大きすぎます ({:.1} MB)。{} MB 以下に切り出してください",
-            bytes.len() as f64 / 1024.0 / 1024.0,
-            MAX_REFERENCE_BYTES / 1024 / 1024
-        ));
-    }
     let name = std::path::Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or(path.clone());
-    let info = ReferenceInfo {
-        name,
-        mime: format.mime().to_string(),
-        size: bytes.len(),
-    };
-    *state.reference.lock().map_err(|e| e.to_string())? = Some(Reference { bytes, format });
+    let reference = tauri::async_runtime::spawn_blocking(move || {
+        let bytes =
+            std::fs::read(&path).map_err(|e| format!("音源ファイルを読めません ({path}): {e}"))?;
+        Reference::new(name, bytes, format)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let info = ReferenceInfo::from(&reference);
+    *state.reference.lock().map_err(|e| e.to_string())? = Some(reference);
     Ok(info)
+}
+
+/// AI に送るリファレンスの区間の開始位置 (秒) を変える。
+#[tauri::command]
+fn set_reference_start(state: State<AppState>, seconds: f32) -> Result<ReferenceInfo, String> {
+    let mut guard = state.reference.lock().map_err(|e| e.to_string())?;
+    let r = guard
+        .as_mut()
+        .ok_or_else(|| "リファレンス音源がセットされていません".to_string())?;
+    r.set_start(seconds)?;
+    Ok(ReferenceInfo::from(&*r))
 }
 
 /// プレビュー再生用に、セットしたリファレンス音源のバイト列を返す。
@@ -187,6 +210,7 @@ pub fn run() {
             open_permission_settings,
             find_target_window,
             set_reference,
+            set_reference_start,
             get_reference_audio,
             clear_reference,
             undo_depth,

@@ -37,7 +37,16 @@ hound = "3.5.1"
 xcap = "0.9"
 enigo = "0.6"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "http2"] }
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm"] }
 
+
+# 録音とリファレンスの加工 (リサンプル・MP3 のデコード) は最適化しないと 100 倍ほど遅く、
+# 開発起動 (tauri dev) やテストで数秒待たされるので、開発時も最適化する。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

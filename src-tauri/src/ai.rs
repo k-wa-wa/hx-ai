@@ -127,7 +127,8 @@ pub struct DoneAction {
 pub struct RequestInput<'a> {
     pub purpose: Purpose<'a>,
     pub history: &'a [ChatTurn],
-    pub reference_audio: Option<(&'a [u8], AudioFormat)>,
+    /// リファレンスから切り出した区間 (WAV)。
+    pub reference_audio: Option<&'a [u8]>,
     pub recording_wav: Option<&'a [u8]>,
     pub screenshot_png: &'a [u8],
     pub screenshot_size: (u32, u32),
@@ -279,10 +280,10 @@ pub fn build_request(model: &str, input: &RequestInput) -> Value {
     }
 
     let mut content = vec![json!({ "type": "text", "text": purpose_text(input) })];
-    if let Some((bytes, format)) = input.reference_audio {
+    if let Some(wav) = input.reference_audio {
         content.push(json!({
             "type": "input_audio",
-            "input_audio": { "data": b64(bytes), "format": format.as_str() }
+            "input_audio": { "data": b64(wav), "format": "wav" }
         }));
     }
     if let Some(wav) = input.recording_wav {
@@ -762,7 +763,7 @@ mod tests {
         RequestInput {
             purpose,
             history,
-            reference_audio: Some((b"REF", AudioFormat::Mp3)),
+            reference_audio: Some(b"REF"),
             recording_wav: Some(b"WAV"),
             screenshot_png: b"PNG",
             screenshot_size: (2400, 1600),
@@ -783,7 +784,7 @@ mod tests {
         assert_eq!(content[0]["type"], "text");
         assert!(content[0]["text"].as_str().unwrap().contains("太く"));
         assert!(content[0]["text"].as_str().unwrap().contains("2400×1600"));
-        assert_eq!(content[1]["input_audio"]["format"], "mp3");
+        assert_eq!(content[1]["input_audio"]["format"], "wav");
         // 期待値は b64 で作らず固定値で書く (b64 が壊れても気づけるように)
         assert_eq!(content[1]["input_audio"]["data"], "UkVG");
         assert_eq!(content[2]["input_audio"]["data"], "V0FW");

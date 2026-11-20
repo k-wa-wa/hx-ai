@@ -152,7 +152,7 @@ fn lowpass_kernel(cutoff: f64) -> Vec<f32> {
             } else {
                 (2.0 * std::f64::consts::PI * cutoff * x).sin() / (std::f64::consts::PI * x)
             };
-            let window = 0.5 * (1.0 + (std::f64::consts::PI * x / (m + 1.0)).cos());
+            let window = 0.5 * (1.0 + (std::f64::consts::PI * x / m).cos());
             (sinc * window) as f32
         })
         .collect()
@@ -196,6 +196,146 @@ pub fn prepare_recording(raw: &Raw) -> Result<Prepared, String> {
         wav: encode_wav(&resampled, 1, AI_SAMPLE_RATE)?,
         peak_dbfs: peak,
         seconds: resampled.len() as f32 / AI_SAMPLE_RATE as f32,
+    })
+}
+
+/// リファレンス音源のうち、AI に送る区間の長さ (秒)。曲全体を毎回送らないため。
+pub const REFERENCE_CLIP_SECONDS: f32 = 20.0;
+
+/// 読み込んだリファレンス音源 (元のサンプリング周波数のモノラル)。
+#[derive(Debug, Clone)]
+pub struct ReferenceTrack {
+    mono: Vec<f32>,
+    sample_rate: u32,
+}
+
+/// リファレンスから切り出した、AI に送る区間。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReferenceClip {
+    /// 16kHz モノラル 16bit の WAV。
+    pub wav: Vec<u8>,
+    pub start: f32,
+    pub seconds: f32,
+}
+
+impl ReferenceTrack {
+    pub fn new(raw: &Raw) -> Result<Self, String> {
+        if raw.samples.is_empty() || raw.sample_rate == 0 {
+            return Err("音源に音が入っていません".to_string());
+        }
+        Ok(Self {
+            mono: mix_to_mono(&raw.samples, raw.channels),
+            sample_rate: raw.sample_rate,
+        })
+    }
+
+    /// WAV / MP3 のバイト列を読む。`extension` は形式を見分ける手がかり ("wav" / "mp3")。
+    pub fn decode(bytes: &[u8], extension: &str) -> Result<Self, String> {
+        Self::new(&decode(bytes, extension)?)
+    }
+
+    pub fn duration(&self) -> f32 {
+        self.mono.len() as f32 / self.sample_rate as f32
+    }
+
+    /// 開始位置を、区間が音源に収まる範囲に寄せる。
+    pub fn clamp_start(&self, start: f32) -> f32 {
+        let latest = (self.duration() - REFERENCE_CLIP_SECONDS).max(0.0);
+        if start.is_nan() {
+            0.0
+        } else {
+            start.clamp(0.0, latest)
+        }
+    }
+
+    /// `start` 秒から `REFERENCE_CLIP_SECONDS` 秒を切り出し、16kHz モノラルの WAV にする。
+    pub fn clip(&self, start: f32) -> Result<ReferenceClip, String> {
+        let start = self.clamp_start(start);
+        let rate = self.sample_rate as f32;
+        let from = ((start * rate) as usize).min(self.mono.len());
+        let to = (from + (REFERENCE_CLIP_SECONDS * rate) as usize).min(self.mono.len());
+        let segment = &self.mono[from..to];
+        let peak = peak_dbfs(segment);
+        if peak < SILENCE_THRESHOLD_DBFS {
+            return Err(format!(
+                "リファレンスの {} からの区間がほぼ無音です (ピーク {peak:.1} dBFS)。再生位置を変えて選び直してください",
+                format_time(start)
+            ));
+        }
+        let resampled = resample(segment, self.sample_rate, AI_SAMPLE_RATE);
+        Ok(ReferenceClip {
+            wav: encode_wav(&resampled, 1, AI_SAMPLE_RATE)?,
+            start,
+            seconds: segment.len() as f32 / rate,
+        })
+    }
+}
+
+/// 秒を「分:秒」で書く (エラーの文言用)。
+fn format_time(seconds: f32) -> String {
+    let s = seconds.max(0.0) as u32;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// 音声ファイルのバイト列をデコードする。
+pub fn decode(bytes: &[u8], extension: &str) -> Result<Raw, String> {
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
+    use symphonia::core::errors::Error;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+
+    let fail = |e: &dyn std::fmt::Display| format!("音源ファイルを読めません: {e}");
+    let mss = MediaSourceStream::new(Box::new(Cursor::new(bytes.to_vec())), Default::default());
+    let mut hint = Hint::new();
+    hint.with_extension(extension);
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|e| fail(&e))?;
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(|| "音源ファイルに音声のトラックがありません".to_string())?;
+    let track_id = track.id;
+    let params = track
+        .codec_params
+        .as_ref()
+        .and_then(|p| p.audio())
+        .ok_or_else(|| "音源ファイルの形式が分かりません".to_string())?;
+    let mut decoder = symphonia::default::get_codecs()
+        .make_audio_decoder(params, &AudioDecoderOptions::default())
+        .map_err(|e| fail(&e))?;
+
+    let mut samples = Vec::new();
+    let mut chunk: Vec<f32> = Vec::new();
+    let mut spec: Option<(u16, u32)> = None;
+    while let Some(packet) = format.next_packet().map_err(|e| fail(&e))? {
+        if packet.track_id != track_id {
+            continue;
+        }
+        match decoder.decode(&packet) {
+            Ok(buf) => {
+                let s = buf.spec();
+                spec.get_or_insert((s.channels().count() as u16, s.rate()));
+                buf.copy_to_vec_interleaved(&mut chunk);
+                samples.extend_from_slice(&chunk);
+            }
+            // 壊れたフレームは飛ばして続ける
+            Err(Error::DecodeError(_)) => continue,
+            Err(e) => return Err(fail(&e)),
+        }
+    }
+    let (channels, sample_rate) =
+        spec.ok_or_else(|| "音源ファイルに音が入っていません".to_string())?;
+    Ok(Raw {
+        samples,
+        channels,
+        sample_rate,
     })
 }
 
@@ -434,5 +574,105 @@ mod tests {
     #[test]
     fn ai_sample_rate_is_16khz() {
         assert_eq!(AI_SAMPLE_RATE, 16_000);
+    }
+
+    fn track(seconds: f32, rate: u32) -> ReferenceTrack {
+        // 1 秒ごとに音量が上がる (どこを切り出したかを音量で見分けられる)
+        let samples = (0..(seconds * rate as f32) as usize)
+            .map(|i| {
+                let level = 0.01 * (1 + i / rate as usize) as f32;
+                (i as f32 / rate as f32 * 440.0 * std::f32::consts::TAU).sin() * level
+            })
+            .collect();
+        ReferenceTrack::new(&Raw {
+            samples,
+            channels: 1,
+            sample_rate: rate,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn reference_clip_is_20s_of_16khz_mono_from_start() {
+        let t = track(60.0, 8_000);
+        assert_eq!(t.duration(), 60.0);
+        let c = t.clip(30.0).unwrap();
+        assert_eq!(c.start, 30.0);
+        assert_eq!(c.seconds, 20.0);
+        let (spec, samples) = read_wav(&c.wav);
+        assert_eq!((spec.channels, spec.sample_rate), (1, 16_000));
+        assert_eq!(samples.len(), 20 * 16_000);
+        // 30〜50 秒目を切り出したので、音量は 0.31〜0.50 の間にある
+        let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap() as f32 / 32768.0;
+        assert!((0.48..=0.51).contains(&peak), "ピーク {peak}");
+        let first = samples[16_000 / 4..16_000 / 2]
+            .iter()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap() as f32
+            / 32768.0;
+        assert!((0.30..=0.32).contains(&first), "出だしのピーク {first}");
+    }
+
+    #[test]
+    fn reference_start_is_clamped_so_the_clip_fits() {
+        let t = track(60.0, 8_000);
+        assert_eq!(t.clamp_start(-5.0), 0.0);
+        assert_eq!(t.clamp_start(55.0), 40.0);
+        assert_eq!(t.clamp_start(f32::NAN), 0.0);
+        assert_eq!(t.clip(55.0).unwrap().start, 40.0);
+        assert_eq!(t.clip(55.0).unwrap().seconds, 20.0);
+    }
+
+    #[test]
+    fn short_reference_is_sent_whole() {
+        let t = track(5.0, 8_000);
+        assert_eq!(t.clamp_start(3.0), 0.0);
+        let c = t.clip(3.0).unwrap();
+        assert_eq!((c.start, c.seconds), (0.0, 5.0));
+    }
+
+    #[test]
+    fn silent_reference_clip_is_an_error_with_its_position() {
+        let mut samples = vec![0.0f32; 8_000 * 70];
+        samples[..8_000].fill(0.5);
+        let t = ReferenceTrack::new(&Raw {
+            samples,
+            channels: 1,
+            sample_rate: 8_000,
+        })
+        .unwrap();
+        assert!(t.clip(0.0).is_ok());
+        let e = t.clip(65.0).unwrap_err();
+        assert!(e.contains("0:50 からの区間がほぼ無音"), "{e}");
+    }
+
+    #[test]
+    fn decode_reads_wav_and_mixes_channels() {
+        let stereo: Vec<f32> = (0..4410).flat_map(|_| [0.5, 0.25]).collect();
+        let wav = encode_wav(&stereo, 2, 44_100).unwrap();
+        let raw = decode(&wav, "wav").unwrap();
+        assert_eq!((raw.channels, raw.sample_rate), (2, 44_100));
+        assert_eq!(raw.samples.len(), 8820);
+        let t = ReferenceTrack::decode(&wav, "wav").unwrap();
+        assert!((t.duration() - 0.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn decode_rejects_garbage() {
+        assert!(decode(b"not audio", "mp3").is_err());
+        assert!(
+            ReferenceTrack::new(&Raw {
+                samples: vec![],
+                channels: 1,
+                sample_rate: 8_000
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reference_clip_length_is_20s() {
+        assert_eq!(REFERENCE_CLIP_SECONDS, 20.0);
     }
 }

@@ -5,6 +5,8 @@ import { afterEach } from "vitest";
 
 // jsdom に無いもの
 Element.prototype.scrollIntoView = function () {};
+URL.createObjectURL = () => "blob:mock";
+URL.revokeObjectURL = () => {};
 
 afterEach(async () => {
   cleanup();

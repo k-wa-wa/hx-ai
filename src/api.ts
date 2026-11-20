@@ -50,6 +50,11 @@ export interface ReferenceInfo {
   name: string;
   mime: string;
   size: number;
+  /** 音源全体の長さ (秒)。 */
+  duration: number;
+  /** AI に送る区間の開始位置と長さ (秒)。 */
+  clipStart: number;
+  clipSeconds: number;
 }
 
 export interface DoneAction {
@@ -91,6 +96,7 @@ export const api = {
     invoke<void>("open_permission_settings", { kind }),
   findTargetWindow: () => invoke<TargetWindow>("find_target_window"),
   setReference: (path: string) => invoke<ReferenceInfo>("set_reference", { path }),
+  setReferenceStart: (seconds: number) => invoke<ReferenceInfo>("set_reference_start", { seconds }),
   getReferenceAudio: () => invoke<ArrayBuffer>("get_reference_audio"),
   clearReference: () => invoke<void>("clear_reference"),
   undoDepth: () => invoke<number>("undo_depth"),

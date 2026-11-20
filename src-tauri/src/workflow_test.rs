@@ -5,6 +5,7 @@
 
 use std::collections::VecDeque;
 
+use base64::Engine as _;
 use serde_json::Value;
 
 use crate::ai::{ActionKind, AiAction, AiResponse, RestoreTarget};
@@ -287,12 +288,21 @@ async fn previous_turns_are_sent_as_history() {
 }
 
 #[tokio::test]
-async fn reference_audio_is_sent_when_set() {
+async fn only_the_selected_reference_clip_is_sent_as_16khz_mono() {
     let s = state();
-    *s.reference.lock().unwrap() = Some(workflow::Reference {
-        bytes: b"MP3DATA".to_vec(),
-        format: crate::ai::AudioFormat::Mp3,
-    });
+    // 60 秒・44.1kHz ステレオの音源
+    let samples: Vec<f32> = (0..44_100 * 60)
+        .flat_map(|i| {
+            let v = if i % 100 < 50 { 0.5 } else { -0.5 };
+            [v, v]
+        })
+        .collect();
+    let file = crate::sound::encode_wav(&samples, 2, 44_100).unwrap();
+    let mut r =
+        workflow::Reference::new("ref.wav".into(), file, crate::ai::AudioFormat::Wav).unwrap();
+    r.set_start(30.0).unwrap();
+    *s.reference.lock().unwrap() = Some(r);
+
     let mut e = FakeEngine::new(vec![answer(vec![])]);
     adjust(&mut e, &s).await;
     let content = &e.requests[0]["messages"]
@@ -300,8 +310,15 @@ async fn reference_audio_is_sent_when_set() {
         .unwrap()
         .last()
         .unwrap()["content"];
-    assert_eq!(content[1]["input_audio"]["format"], "mp3");
-    assert_eq!(content[2]["input_audio"]["format"], "wav");
+    assert_eq!(content[1]["input_audio"]["format"], "wav");
+    let sent = base64::engine::general_purpose::STANDARD
+        .decode(content[1]["input_audio"]["data"].as_str().unwrap())
+        .unwrap();
+    let reader = hound::WavReader::new(std::io::Cursor::new(sent)).unwrap();
+    assert_eq!(reader.spec().channels, 1);
+    assert_eq!(reader.spec().sample_rate, 16_000);
+    assert_eq!(reader.len(), 20 * 16_000, "曲全体ではなく 20 秒だけ送る");
+    assert_eq!(content[2]["input_audio"]["data"], "V0FW", "2 つ目は録音");
 }
 
 #[tokio::test]

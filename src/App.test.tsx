@@ -201,6 +201,85 @@ describe("元に戻す", () => {
   });
 });
 
+describe("リファレンス", () => {
+  const REF = {
+    name: "song.mp3",
+    mime: "audio/mpeg",
+    size: 1000,
+    duration: 192,
+    clipStart: 0,
+    clipSeconds: 20,
+  };
+
+  async function drop() {
+    await emit("tauri://drag-drop", { paths: ["/music/song.mp3"], position: { x: 0, y: 0 } });
+  }
+
+  it("落とした音源を読み込み、AI に送る区間を表示する", async () => {
+    const b = setupBackend({
+      set_reference: () => REF,
+      get_reference_audio: () => new ArrayBuffer(4),
+    });
+    await renderApp();
+    await drop();
+    expect(await screen.findByText("AI に送る区間 0:00〜0:20")).toBeInTheDocument();
+    expect(b.callsTo("set_reference")).toEqual([{ path: "/music/song.mp3" }]);
+  });
+
+  it("再生位置から区間を選び直す", async () => {
+    const b = setupBackend({
+      set_reference: () => REF,
+      get_reference_audio: () => new ArrayBuffer(4),
+      set_reference_start: (args) => ({ ...REF, clipStart: (args as { seconds: number }).seconds }),
+    });
+    const user = await renderApp();
+    await drop();
+    await screen.findByText("AI に送る区間 0:00〜0:20");
+    const audio = document.querySelector("audio")!;
+    Object.defineProperty(audio, "currentTime", { value: 75.4, configurable: true });
+    await user.click(screen.getByRole("button", { name: "再生位置から使う" }));
+    expect(await screen.findByText("AI に送る区間 1:15〜1:35")).toBeInTheDocument();
+    expect(b.callsTo("set_reference_start")).toEqual([{ seconds: 75.4 }]);
+  });
+
+  it("区間を選べないときはエラーを出し、前の区間の表示を残す", async () => {
+    setupBackend({
+      set_reference: () => REF,
+      get_reference_audio: () => new ArrayBuffer(4),
+      set_reference_start: () => {
+        throw "リファレンスの 1:15 からの区間がほぼ無音です";
+      },
+    });
+    const user = await renderApp();
+    await drop();
+    await user.click(await screen.findByRole("button", { name: "再生位置から使う" }));
+    expect(await screen.findByText(/ほぼ無音です/)).toBeInTheDocument();
+    expect(screen.getByText("AI に送る区間 0:00〜0:20")).toBeInTheDocument();
+  });
+
+  it("20 秒より短い音源は全体を送るので、選び直すボタンを出さない", async () => {
+    setupBackend({
+      set_reference: () => ({ ...REF, duration: 8.5, clipSeconds: 8.5 }),
+      get_reference_audio: () => new ArrayBuffer(4),
+    });
+    await renderApp();
+    await drop();
+    expect(await screen.findByText("AI に送る区間 0:00〜0:08")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "再生位置から使う" })).not.toBeInTheDocument();
+  });
+
+  it("読めない音源はエラーを出す", async () => {
+    setupBackend({
+      set_reference: () => {
+        throw "音源ファイルを読めません";
+      },
+    });
+    await renderApp();
+    await drop();
+    expect(await screen.findByText("音源ファイルを読めません")).toBeInTheDocument();
+  });
+});
+
 describe("設定", () => {
   async function openSettings() {
     const user = await renderApp();

@@ -17,22 +17,56 @@ use crate::automation::{self, Outcome};
 use crate::capture::{self, Screenshot, TargetWindow};
 use crate::config::{self, ResolvedSettings, StoredSettings};
 use crate::macos;
+use crate::sound::{ReferenceClip, ReferenceTrack};
 
 /// 1 サイクルで撮り直して AI に聞き直す回数の上限。
 pub const MAX_ROUNDS: usize = 4;
 
-/// リファレンス音源の上限。base64 にすると 4/3 倍になり、API のリクエスト上限 (約 20MB) に収める。
-pub const MAX_REFERENCE_BYTES: usize = 10 * 1024 * 1024;
-// base64 で 4/3 倍になってもリクエスト上限に収まり、数分の MP3 (数 MB) は受け付けること
-const _: () = assert!(MAX_REFERENCE_BYTES * 4 / 3 < 20 * 1024 * 1024);
-const _: () = assert!(MAX_REFERENCE_BYTES >= 5 * 1024 * 1024);
+/// リファレンス音源ファイルの上限。AI には切り出した区間しか送らないので、
+/// 上限は読み込みとプレビューの重さで決める。数分の WAV (数十 MB) は受け付ける。
+pub const MAX_REFERENCE_BYTES: usize = 50 * 1024 * 1024;
+// 数分の WAV (44.1kHz ステレオで 1 分 約 10MB) を受け付けること
+const _: () = assert!(MAX_REFERENCE_BYTES >= 50 * 1024 * 1024);
 
 /// Undo 履歴に残す数。
 pub const MAX_UNDO_GROUPS: usize = 20;
 
 pub struct Reference {
+    pub name: String,
+    /// プレビュー再生用の元のファイル。
     pub bytes: Vec<u8>,
     pub format: AudioFormat,
+    pub track: ReferenceTrack,
+    /// AI に送る区間。
+    pub clip: ReferenceClip,
+}
+
+impl Reference {
+    /// 音源ファイルを読み、先頭からの区間を AI に送る区間にする。
+    pub fn new(name: String, bytes: Vec<u8>, format: AudioFormat) -> Result<Self, String> {
+        if bytes.len() > MAX_REFERENCE_BYTES {
+            return Err(format!(
+                "音源ファイルが大きすぎます ({:.1} MB)。{} MB 以下に切り出してください",
+                bytes.len() as f64 / 1024.0 / 1024.0,
+                MAX_REFERENCE_BYTES / 1024 / 1024
+            ));
+        }
+        let track = ReferenceTrack::decode(&bytes, format.as_str())?;
+        let clip = track.clip(0.0)?;
+        Ok(Self {
+            name,
+            bytes,
+            format,
+            track,
+            clip,
+        })
+    }
+
+    /// AI に送る区間の開始位置を変える。無音の区間を選んだときは元の区間のまま、エラーにする。
+    pub fn set_start(&mut self, seconds: f32) -> Result<(), String> {
+        self.clip = self.track.clip(seconds)?;
+        Ok(())
+    }
 }
 
 pub struct AppState {
@@ -219,7 +253,7 @@ fn ensure_permissions(need_microphone: bool) -> Result<(), String> {
 struct CycleInput<'a> {
     purpose: Purpose<'a>,
     history: &'a [ChatTurn],
-    reference: Option<(&'a [u8], AudioFormat)>,
+    reference: Option<&'a [u8]>,
     recording: Option<&'a [u8]>,
 }
 
@@ -368,14 +402,14 @@ pub async fn adjust<E: Engine>(
         .lock()
         .map_err(|e| e.to_string())?
         .as_ref()
-        .map(|r| (r.bytes.clone(), r.format));
+        .map(|r| r.clip.wav.clone());
     let history = state.chat.lock().map_err(|e| e.to_string())?.clone();
 
     let mut report = CycleReport::empty(Some(recording_peak_dbfs));
     let input = CycleInput {
         purpose: Purpose::Adjust { instruction },
         history: &history,
-        reference: reference.as_ref().map(|(b, f)| (b.as_slice(), *f)),
+        reference: reference.as_deref(),
         recording: Some(recording_wav),
     };
     let result = run_rounds(engine, model, &input, &mut report, |_| {}).await;
@@ -597,5 +631,48 @@ mod tests {
         assert!(BusyGuard::acquire(&flag).is_err());
         drop(g);
         assert!(BusyGuard::acquire(&flag).is_ok());
+    }
+
+    fn reference_wav(seconds: usize) -> Vec<u8> {
+        // 先頭の 1 秒だけ無音、その後は音が鳴っている 8kHz の WAV
+        let mut samples = vec![0.0f32; 8_000];
+        samples.extend((0..8_000 * (seconds - 1)).map(|i| if i % 16 < 8 { 0.5 } else { -0.5 }));
+        crate::sound::encode_wav(&samples, 1, 8_000).unwrap()
+    }
+
+    #[test]
+    fn reference_starts_at_the_beginning() {
+        let r = Reference::new("a.wav".into(), reference_wav(60), AudioFormat::Wav).unwrap();
+        assert_eq!(r.clip.start, 0.0);
+        assert_eq!(r.clip.seconds, crate::sound::REFERENCE_CLIP_SECONDS);
+    }
+
+    #[test]
+    fn reference_start_can_be_moved_and_failure_keeps_the_previous_clip() {
+        let mut r = Reference::new("a.wav".into(), reference_wav(60), AudioFormat::Wav).unwrap();
+        r.set_start(30.0).unwrap();
+        assert_eq!(r.clip.start, 30.0);
+
+        let mut quiet = vec![0.5f32; 8_000];
+        quiet.extend(vec![0.0f32; 8_000 * 59]);
+        let wav = crate::sound::encode_wav(&quiet, 1, 8_000).unwrap();
+        let mut r = Reference::new("q.wav".into(), wav, AudioFormat::Wav).unwrap();
+        assert!(r.set_start(30.0).is_err());
+        assert_eq!(
+            r.clip.start, 0.0,
+            "無音の区間を選んでも前の区間を使い続ける"
+        );
+    }
+
+    #[test]
+    fn reference_file_size_is_limited() {
+        let e = Reference::new(
+            "big.wav".into(),
+            vec![0; MAX_REFERENCE_BYTES + 1],
+            AudioFormat::Wav,
+        )
+        .err()
+        .unwrap();
+        assert!(e.contains("大きすぎます"), "{e}");
     }
 }

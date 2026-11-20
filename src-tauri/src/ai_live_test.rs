@@ -5,7 +5,7 @@
 //! 入力の画面は scripts/make_mock_screenshot.swift で描いた HX Edit 風の模擬画面
 //! (1200×800 ポイント) である。数値欄の中心は x = 100 + 140 * i, y = 712 ポイントにある。
 
-use crate::ai::{self, ActionKind, AiResponse, AudioFormat, Purpose, RequestInput, RestoreTarget};
+use crate::ai::{self, ActionKind, AiResponse, Purpose, RequestInput, RestoreTarget};
 use crate::config::{self, StoredSettings};
 use crate::sound;
 
@@ -147,28 +147,4 @@ async fn ai_live_selects_hidden_block() {
         last.y,
         DELAY_BLOCK
     );
-}
-
-#[test]
-fn mp3_reference_format_is_accepted_by_request_builder() {
-    // API を呼ばずに、MP3 のリファレンスがリクエストに入ることだけを見る
-    let body = ai::build_request(
-        "m",
-        &RequestInput {
-            purpose: Purpose::Adjust { instruction: "" },
-            history: &[],
-            reference_audio: Some((b"ID3", AudioFormat::Mp3)),
-            recording_wav: None,
-            screenshot_png: SCREENSHOT,
-            screenshot_size: SCREENSHOT_SIZE,
-            round: 1,
-            max_rounds: 4,
-            done_in_this_cycle: &[],
-        },
-    );
-    let content = body["messages"].as_array().unwrap().last().unwrap()["content"]
-        .as_array()
-        .unwrap()
-        .clone();
-    assert_eq!(content[1]["input_audio"]["format"], "mp3");
 }
