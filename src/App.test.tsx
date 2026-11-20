@@ -41,15 +41,6 @@ describe("起動時", () => {
     expect(screen.getAllByRole("button", { name: "設定を開く" })).toHaveLength(1);
   });
 
-  it("グローバルショートカットを登録する", async () => {
-    const b = setupBackend();
-    await renderApp();
-    await waitFor(() => expect(b.callsTo("plugin:global-shortcut|register")).toHaveLength(1));
-    expect(b.callsTo("plugin:global-shortcut|register")[0]).toMatchObject({
-      shortcuts: ["CommandOrControl+Alt+H"],
-    });
-  });
-
   it("常に手前に表示を既定でオンにし、切り替えられる", async () => {
     const b = setupBackend();
     const user = await renderApp();

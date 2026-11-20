@@ -235,7 +235,6 @@ pub fn run() {
     let _ = dotenvy::dotenv();
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
             let settings_path = config::settings_path(&config_dir);

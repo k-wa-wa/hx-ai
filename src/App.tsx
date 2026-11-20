@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import {
   api,
   CycleReport,
@@ -20,9 +19,6 @@ import { allGranted, PermissionDots, PermissionPanel } from "./components/Permis
 import { formatTime, ReferenceDrop } from "./components/ReferenceDrop";
 import { SettingsPanel } from "./components/SettingsPanel";
 import "./App.css";
-
-const SHORTCUT = "CommandOrControl+Alt+H";
-const SHORTCUT_LABEL = "⌘⌥H";
 
 /** 手動の録音の上限 (秒)。Rust 側の MAX_RECORD_SECONDS と同じ。 */
 export const MAX_RECORD_SECONDS = 30;
@@ -352,18 +348,12 @@ export default function App() {
     }
   }, [instruction, push, pushError]);
 
-  /** ⌘↩ とショートカットで呼ぶ、いまのモードの主な操作。 */
+  /** ⌘↩ で呼ぶ、いまのモードの主な操作。 */
   const submit = useCallback(() => {
     if (mode === "manual") send();
     else if (looping) addLoopInstruction();
     else startLoop();
   }, [mode, looping, send, addLoopInstruction, startLoop]);
-
-  const shortcut = useCallback(() => {
-    if (mode === "manual") toggleRecording();
-    else if (looping) stopLoop();
-    else startLoop();
-  }, [mode, looping, toggleRecording, stopLoop, startLoop]);
 
   const undo = useCallback(async () => {
     if (busy) return;
@@ -379,22 +369,6 @@ export default function App() {
       api.undoDepth().then(setUndoDepth).catch(() => {});
     }
   }, [busy, push, pushError, showReport]);
-
-  // グローバルショートカット: 手動モードは録音の開始/停止、自動ループは開始/停止。
-  // 登録は一度だけにし、最新の関数は ref で引く
-  const runRef = useRef(shortcut);
-  runRef.current = shortcut;
-  useEffect(() => {
-    let registered = false;
-    register(SHORTCUT, (e) => {
-      if (e.state === "Pressed") runRef.current();
-    })
-      .then(() => (registered = true))
-      .catch((e) => pushError(`ショートカット ${SHORTCUT_LABEL} を登録できません: ${errorText(e)}`));
-    return () => {
-      if (registered) unregister(SHORTCUT).catch(() => {});
-    };
-  }, [pushError]);
 
   const clearChat = async () => {
     try {
@@ -606,8 +580,8 @@ export default function App() {
         <div className="hint muted small">
           <span>
             {mode === "manual"
-              ? `${SHORTCUT_LABEL} で録音の開始/停止 · ⌘↩ で送信`
-              : `${SHORTCUT_LABEL} でループの開始/停止 · ⌘↩ で${looping ? "指示を追加" : "開始"}`}
+              ? "⌘↩ で送信"
+              : `⌘↩ で${looping ? "指示を追加" : "開始"}`}
           </span>
           {messages.length > 0 && (
             <button className="link" onClick={clearChat} disabled={busy}>

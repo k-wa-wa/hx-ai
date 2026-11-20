@@ -65,14 +65,8 @@ describe("フロントエンドと Rust のコマンド", () => {
     }
   });
 
-  it("グローバルショートカットの登録に必要な権限がある", () => {
+  it("常に手前に表示の切り替えに必要な権限がある", () => {
     const perms: string[] = JSON.parse(read("src-tauri/capabilities/default.json")).permissions;
-    for (const p of [
-      "global-shortcut:allow-register",
-      "global-shortcut:allow-unregister",
-      "core:window:allow-set-always-on-top",
-    ]) {
-      expect(perms).toContain(p);
-    }
+    expect(perms).toContain("core:window:allow-set-always-on-top");
   });
 });
