@@ -17,6 +17,9 @@ pub const MAX_SET_VALUE_ACTIONS: usize = 12;
 /// 会話の文脈として送る過去のやりとりの数。
 pub const MAX_HISTORY_TURNS: usize = 8;
 
+/// 過去のやりとり 1 つあたりに送る文字数の上限。変えた値は別に一覧で送るので、説明は短くてよい。
+pub const MAX_HISTORY_CHARS: usize = 400;
+
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +139,10 @@ pub struct RequestInput<'a> {
     pub round: usize,
     pub max_rounds: usize,
     pub done_in_this_cycle: &'a [DoneAction],
+    /// 同じサイクルの前の撮影であなたが書いた説明 (2 回目以降は音声を送らないので、方針を伝える)。
+    pub earlier_explanations: &'a [String],
+    /// このセッションでアプリが打ち込んだ値 (パラメータごとに最後の値)。
+    pub changed_parameters: &'a [RestoreTarget],
 }
 
 pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp を HX Edit (macOS) で操作するギター音作りのアシスタントである。
@@ -168,6 +175,7 @@ pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp を HX Edit (mac
 ブロックの選び直し:
 - 変えたいパラメータが画面に出ていないブロックにあるときは、いま見えているパラメータの set_value を先に並べ、最後に select_block を 1 つだけ置き、needs_another_round を true にする。アプリはそのブロックを選んでから撮り直し、もう一度あなたに聞く。
 - それ以外のときは needs_another_round を false にする。
+- 選び直した後は撮り直したスクリーンショットだけを渡し、音声は渡さない。select_block を返すときは、選んだ後に変える予定のパラメータと変える向きを explanation に書いておくこと。
 
 explanation は日本語で、何をなぜ変えるのか、録音とリファレンスの違いをどう聴いたのかを簡潔に書く。"#;
 
@@ -230,16 +238,40 @@ fn purpose_text(input: &RequestInput) -> String {
                 t.push_str(instruction.trim());
             }
             t.push('\n');
-            match (
-                input.reference_audio.is_some(),
-                input.recording_wav.is_some(),
-            ) {
-                (true, true) => t.push_str(
-                    "1 つ目の音声がリファレンス (目標の音)、2 つ目の音声が現在の録音である。\n",
-                ),
-                (false, true) => t.push_str("音声は現在の録音である。リファレンスは無い。\n"),
-                (true, false) => t.push_str("音声はリファレンスのみである。\n"),
-                (false, false) => t.push_str("音声は無い。\n"),
+            if input.round > 1 {
+                t.push_str(
+                    "音声は 1 回目の問い合わせで渡した (データ量を抑えるため今回は渡さない)。\
+                     前の撮影でのあなたの説明:\n",
+                );
+                for e in input.earlier_explanations {
+                    t.push_str(&format!("- {}\n", truncate(e.trim(), MAX_HISTORY_CHARS)));
+                }
+            } else {
+                match (
+                    input.reference_audio.is_some(),
+                    input.recording_wav.is_some(),
+                ) {
+                    (true, true) => t.push_str(
+                        "1 つ目の音声がリファレンス (目標の音)、2 つ目の音声が現在の録音である。\n",
+                    ),
+                    (false, true) => {
+                        t.push_str("音声は現在の録音である。リファレンスは無い。\n")
+                    }
+                    (true, false) => t.push_str(
+                        "音声はリファレンスのみである。現在の音は録音されていないので、画面と指示から判断する。\n",
+                    ),
+                    (false, false) => t.push_str(
+                        "音声は無い。画面と指示から判断する。\n",
+                    ),
+                }
+            }
+            if !input.changed_parameters.is_empty() {
+                t.push_str(
+                    "このセッションでアプリが打ち込んだ値 (その後ユーザーが手で変えたかもしれないので、画面の値を優先する):\n",
+                );
+                for c in input.changed_parameters {
+                    t.push_str(&format!("- {} / {}: {}\n", c.block, c.parameter, c.value));
+                }
             }
             t
         }
@@ -276,17 +308,22 @@ pub fn build_request(model: &str, input: &RequestInput) -> Value {
 
     let start = input.history.len().saturating_sub(MAX_HISTORY_TURNS);
     for turn in &input.history[start..] {
-        messages.push(json!({ "role": turn.role, "content": turn.text }));
+        messages.push(json!({
+            "role": turn.role,
+            "content": truncate(&turn.text, MAX_HISTORY_CHARS)
+        }));
     }
 
     let mut content = vec![json!({ "type": "text", "text": purpose_text(input) })];
-    if let Some(wav) = input.reference_audio {
+    // 音声は 1 回目の撮影でだけ送る (ブロックを選び直した後は画面だけを見ればよい)
+    let audio = input.round == 1;
+    if let Some(wav) = input.reference_audio.filter(|_| audio) {
         content.push(json!({
             "type": "input_audio",
             "input_audio": { "data": b64(wav), "format": "wav" }
         }));
     }
-    if let Some(wav) = input.recording_wav {
+    if let Some(wav) = input.recording_wav.filter(|_| audio) {
         content.push(json!({
             "type": "input_audio",
             "input_audio": { "data": b64(wav), "format": "wav" }
@@ -770,6 +807,8 @@ mod tests {
             round: 1,
             max_rounds: 4,
             done_in_this_cycle: &[],
+            earlier_explanations: &[],
+            changed_parameters: &[],
         }
     }
 
@@ -853,5 +892,96 @@ mod tests {
         let body = json!({ "choices": [{ "message": {}, "finish_reason": "length" }] });
         assert!(parse_response(&body).unwrap_err().contains("length"));
         assert!(parse_response(&json!({})).is_err());
+    }
+
+    fn last_content(body: &Value) -> Vec<Value> {
+        body["messages"].as_array().unwrap().last().unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn audio_is_sent_only_on_the_first_round() {
+        let explanations = vec!["Delay を選んでから Mix を上げる".to_string()];
+        let mut i = input(ADJUST, &[]);
+        i.round = 2;
+        i.earlier_explanations = &explanations;
+        let content = last_content(&build_request("m", &i));
+        let types: Vec<&str> = content
+            .iter()
+            .map(|c| c["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(types, vec!["text", "image_url"], "2 回目は音声を送らない");
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("1 回目の問い合わせで渡した"), "{text}");
+        assert!(text.contains("- Delay を選んでから Mix を上げる"), "{text}");
+        assert!(!text.contains("2 つ目の音声"), "{text}");
+    }
+
+    #[test]
+    fn history_turns_are_truncated() {
+        let history = vec![ChatTurn {
+            role: "assistant".into(),
+            text: "あ".repeat(MAX_HISTORY_CHARS * 3),
+        }];
+        let body = build_request("m", &input(ADJUST, &history));
+        let sent = body["messages"][1]["content"].as_str().unwrap();
+        assert_eq!(
+            sent.chars().count(),
+            MAX_HISTORY_CHARS + 1,
+            "上限 + 省略記号"
+        );
+        assert!(sent.ends_with('…'));
+        assert_eq!(MAX_HISTORY_CHARS, 400);
+    }
+
+    #[test]
+    fn changed_parameters_are_listed_for_adjust() {
+        let changed = vec![RestoreTarget {
+            block: "Amp".into(),
+            parameter: "Treble".into(),
+            value: "6.0".into(),
+        }];
+        let mut i = input(ADJUST, &[]);
+        i.changed_parameters = &changed;
+        let text = last_content(&build_request("m", &i))[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("アプリが打ち込んだ値"), "{text}");
+        assert!(text.contains("- Amp / Treble: 6.0"), "{text}");
+        let plain = last_content(&build_request("m", &input(ADJUST, &[])))[0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(!plain.contains("アプリが打ち込んだ値"));
+    }
+
+    #[test]
+    fn audio_description_matches_what_is_sent() {
+        let text = |reference: bool, recording: bool| {
+            let mut i = input(ADJUST, &[]);
+            if !reference {
+                i.reference_audio = None;
+            }
+            if !recording {
+                i.recording_wav = None;
+            }
+            last_content(&build_request("m", &i))[0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(text(true, true).contains("1 つ目の音声がリファレンス"));
+        assert!(text(false, true).contains("リファレンスは無い"));
+        assert!(text(true, false).contains("現在の音は録音されていない"));
+        assert!(text(false, false).contains("音声は無い"));
+    }
+
+    #[test]
+    fn system_prompt_says_audio_is_not_resent_after_selecting_a_block() {
+        assert!(SYSTEM_PROMPT.contains("音声は渡さない"));
+        assert!(SYSTEM_PROMPT.contains("変える予定のパラメータ"));
     }
 }

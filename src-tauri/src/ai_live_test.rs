@@ -7,10 +7,22 @@
 
 use crate::ai::{self, ActionKind, AiResponse, Purpose, RequestInput, RestoreTarget};
 use crate::config::{self, StoredSettings};
+use crate::geometry::{MAX_SCREENSHOT_SIDE, fit_within};
 use crate::sound;
 
 const SCREENSHOT: &[u8] = include_bytes!("../tests/fixtures/mock_hx_edit.png");
-const SCREENSHOT_SIZE: (u32, u32) = (2400, 1600);
+
+/// アプリと同じく、長辺を `MAX_SCREENSHOT_SIDE` に縮めたスクリーンショット。
+fn screenshot() -> (Vec<u8>, (u32, u32)) {
+    let image = image::load_from_memory(SCREENSHOT).unwrap();
+    let (w, h) = fit_within(image.width(), image.height(), MAX_SCREENSHOT_SIDE);
+    let resized = image.resize_exact(w, h, image::imageops::FilterType::Triangle);
+    let mut png = Vec::new();
+    resized
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    (png, (w, h))
+}
 
 /// 模擬画面の要素の中心 (正規化座標)。
 const TREBLE_VALUE: (f64, f64) = (520.0 / 1200.0 * 1000.0, 712.0 / 800.0 * 1000.0);
@@ -19,7 +31,7 @@ const DELAY_BLOCK: (f64, f64) = (696.0 / 1200.0 * 1000.0, 152.0 / 800.0 * 1000.0
 /// 正解からこの距離 (正規化座標) 以内なら当たりとみなす。数値欄の半幅は約 28 である。
 const TOLERANCE: f64 = 30.0;
 
-/// 高域の強いのこぎり波 (耳に痛い音の代わり)。
+/// 高域の強いのこぎり波 (耳に痛い音の代わり)。アプリと同じく 16kHz モノラルにして送る。
 fn bright_tone_wav() -> Vec<u8> {
     let sr = 48_000u32;
     let mut samples = Vec::new();
@@ -30,7 +42,13 @@ fn bright_tone_wav() -> Vec<u8> {
         samples.push(s);
         samples.push(s);
     }
-    sound::encode_wav(&samples, 2, sr).unwrap()
+    sound::prepare_recording(&sound::Raw {
+        samples,
+        channels: 2,
+        sample_rate: sr,
+    })
+    .unwrap()
+    .wav
 }
 
 async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
@@ -38,6 +56,7 @@ async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
     let settings = StoredSettings::default()
         .resolve(&config::process_env)
         .expect("OPENAI_API_KEY が必要");
+    let (png, size) = screenshot();
     let body = ai::build_request(
         &settings.model,
         &RequestInput {
@@ -45,11 +64,13 @@ async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
             history: &[],
             reference_audio: None,
             recording_wav: recording,
-            screenshot_png: SCREENSHOT,
-            screenshot_size: SCREENSHOT_SIZE,
+            screenshot_png: &png,
+            screenshot_size: size,
             round: 1,
             max_rounds: 4,
             done_in_this_cycle: &[],
+            earlier_explanations: &[],
+            changed_parameters: &[],
         },
     );
     let started = std::time::Instant::now();

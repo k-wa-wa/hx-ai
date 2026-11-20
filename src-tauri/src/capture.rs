@@ -5,7 +5,7 @@ use std::io::Cursor;
 use serde::Serialize;
 use xcap::Window;
 
-use crate::geometry::{Rect, ScreenWindow};
+use crate::geometry::{MAX_SCREENSHOT_SIDE, Rect, ScreenWindow, fit_within};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TargetWindow {
@@ -115,10 +115,15 @@ pub fn capture(app_name: &str) -> Result<Screenshot, String> {
             "HX Edit のウィンドウをキャプチャできません (画面収録の権限を確かめてください): {e}"
         )
     })?;
-    let (width, height) = image.dimensions();
-    if width == 0 || height == 0 {
+    if image.width() == 0 || image.height() == 0 {
         return Err("キャプチャした画像が空です".to_string());
     }
+    let (width, height) = fit_within(image.width(), image.height(), MAX_SCREENSHOT_SIDE);
+    let image = if (width, height) == image.dimensions() {
+        image
+    } else {
+        image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle)
+    };
     let mut png = Vec::new();
     image
         .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)

@@ -147,6 +147,22 @@ pub fn ensure_mouse_untouched(expected: (i32, i32), actual: (i32, i32)) -> Resul
     }
 }
 
+/// AI に送るスクリーンショットの長辺の上限 (ピクセル)。Retina の画面をそのまま送ると
+/// 2400px を超えるが、HX Edit の文字はこの大きさでも読める。座標は 0〜1000 の
+/// 正規化座標で受け取るので、縮めても操作する位置は変わらない。
+pub const MAX_SCREENSHOT_SIDE: u32 = 1600;
+
+/// 縦横比を保ったまま、長辺が `max_side` 以下になる大きさを返す。小さければそのまま。
+pub fn fit_within(width: u32, height: u32, max_side: u32) -> (u32, u32) {
+    let long = width.max(height);
+    if long <= max_side {
+        return (width, height);
+    }
+    let scale =
+        |v: u32| ((v as u64 * max_side as u64 + long as u64 / 2) / long as u64).max(1) as u32;
+    (scale(width), scale(height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,5 +377,20 @@ mod tests {
         assert!(ensure_mouse_untouched((100, 100), (140, 100)).is_err());
         assert!(ensure_mouse_untouched((100, 100), (100, 105)).is_err());
         assert!(ensure_mouse_untouched((100, 100), (95, 100)).is_err());
+    }
+
+    #[test]
+    fn fit_within_scales_long_side_and_keeps_aspect() {
+        assert_eq!(fit_within(2400, 1600, 1600), (1600, 1067));
+        assert_eq!(fit_within(1600, 2400, 1600), (1067, 1600));
+        assert_eq!(fit_within(3000, 3000, 1600), (1600, 1600));
+        assert_eq!(fit_within(10000, 1, 1600), (1600, 1), "0 にはしない");
+    }
+
+    #[test]
+    fn fit_within_keeps_small_images() {
+        assert_eq!(fit_within(1600, 1000, 1600), (1600, 1000));
+        assert_eq!(fit_within(1200, 800, 1600), (1200, 800));
+        assert_eq!(MAX_SCREENSHOT_SIDE, 1600);
     }
 }

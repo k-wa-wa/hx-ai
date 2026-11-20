@@ -31,6 +31,9 @@ const _: () = assert!(MAX_REFERENCE_BYTES >= 50 * 1024 * 1024);
 /// Undo 履歴に残す数。
 pub const MAX_UNDO_GROUPS: usize = 20;
 
+/// AI に伝える「このセッションで変えたパラメータ」の数。古いものから忘れる。
+pub const MAX_CHANGED_PARAMETERS: usize = 24;
+
 pub struct Reference {
     pub name: String,
     /// プレビュー再生用の元のファイル。
@@ -76,6 +79,9 @@ pub struct AppState {
     /// Undo 用。1 要素が 1 サイクル分の「戻す値」の一覧。
     pub undo_stack: Mutex<Vec<Vec<RestoreTarget>>>,
     pub chat: Mutex<Vec<ChatTurn>>,
+    /// このセッションでアプリが打ち込んだ値 (パラメータごとに最後の値)。会話の履歴は
+    /// 切り詰めて送るので、どのパラメータをどこまで動かしたかはこちらで伝える。
+    pub changed: Mutex<Vec<RestoreTarget>>,
     pub busy: AtomicBool,
 }
 
@@ -87,6 +93,7 @@ impl AppState {
             reference: Mutex::new(None),
             undo_stack: Mutex::new(Vec::new()),
             chat: Mutex::new(Vec::new()),
+            changed: Mutex::new(Vec::new()),
             busy: AtomicBool::new(false),
         }
     }
@@ -253,6 +260,7 @@ fn ensure_permissions(need_microphone: bool) -> Result<(), String> {
 struct CycleInput<'a> {
     purpose: Purpose<'a>,
     history: &'a [ChatTurn],
+    changed: &'a [RestoreTarget],
     reference: Option<&'a [u8]>,
     recording: Option<&'a [u8]>,
 }
@@ -289,6 +297,8 @@ async fn run_rounds<E: Engine>(
                 round,
                 max_rounds: MAX_ROUNDS,
                 done_in_this_cycle: &done_in_cycle,
+                earlier_explanations: &report.explanations,
+                changed_parameters: input.changed,
             },
         );
         let resp = engine.ask(&body).await?;
@@ -349,6 +359,23 @@ pub fn restore_targets(changes: &[DoneAction]) -> Vec<RestoreTarget> {
     out
 }
 
+/// 実行した値の変更を「変えたパラメータ」の一覧に反映する。同じパラメータは最後の値だけを
+/// 一覧の末尾に残し、上限を超えたら古いものから消す。
+pub fn record_changes(log: &mut Vec<RestoreTarget>, changes: &[DoneAction]) {
+    for c in changes.iter().filter(|c| c.kind == ActionKind::SetValue) {
+        log.retain(|t| {
+            !(norm(&t.block) == norm(&c.block) && norm(&t.parameter) == norm(&c.parameter))
+        });
+        log.push(RestoreTarget {
+            block: c.block.clone(),
+            parameter: c.parameter.clone(),
+            value: c.value.clone(),
+        });
+    }
+    let excess = log.len().saturating_sub(MAX_CHANGED_PARAMETERS);
+    log.drain(..excess);
+}
+
 fn norm(s: &str) -> String {
     s.split_whitespace()
         .collect::<Vec<_>>()
@@ -404,17 +431,23 @@ pub async fn adjust<E: Engine>(
         .as_ref()
         .map(|r| r.clip.wav.clone());
     let history = state.chat.lock().map_err(|e| e.to_string())?.clone();
+    let changed = state.changed.lock().map_err(|e| e.to_string())?.clone();
 
     let mut report = CycleReport::empty(Some(recording_peak_dbfs));
     let input = CycleInput {
         purpose: Purpose::Adjust { instruction },
         history: &history,
+        changed: &changed,
         reference: reference.as_deref(),
         recording: Some(recording_wav),
     };
     let result = run_rounds(engine, model, &input, &mut report, |_| {}).await;
     report.error = result.err();
 
+    record_changes(
+        &mut *state.changed.lock().map_err(|e| e.to_string())?,
+        &report.changes,
+    );
     let targets = restore_targets(&report.changes);
     if !targets.is_empty() {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
@@ -469,6 +502,7 @@ pub async fn revert<E: Engine>(
     let input = CycleInput {
         purpose: Purpose::Revert { targets: &targets },
         history: &[],
+        changed: &[],
         reference: None,
         recording: None,
     };
@@ -477,6 +511,10 @@ pub async fn revert<E: Engine>(
     })
     .await;
     report.error = result.err();
+    record_changes(
+        &mut *state.changed.lock().map_err(|e| e.to_string())?,
+        &report.changes,
+    );
 
     {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
@@ -674,5 +712,39 @@ mod tests {
         .err()
         .unwrap();
         assert!(e.contains("大きすぎます"), "{e}");
+    }
+
+    #[test]
+    fn record_changes_keeps_last_value_per_parameter_at_the_end() {
+        let mut log = vec![];
+        record_changes(
+            &mut log,
+            &[
+                done(ActionKind::SetValue, "Amp", "Bass", "5", "6"),
+                done(ActionKind::SetValue, "Amp", "Treble", "7", "6.5"),
+                done(ActionKind::SelectBlock, "Delay", "", "", ""),
+            ],
+        );
+        record_changes(
+            &mut log,
+            &[done(ActionKind::SetValue, "amp", " bass", "6", "7")],
+        );
+        let got: Vec<(&str, &str)> = log
+            .iter()
+            .map(|t| (t.parameter.as_str(), t.value.as_str()))
+            .collect();
+        assert_eq!(got, vec![("Treble", "6.5"), (" bass", "7")]);
+    }
+
+    #[test]
+    fn record_changes_forgets_oldest_beyond_the_limit() {
+        let mut log = vec![];
+        let changes: Vec<DoneAction> = (0..MAX_CHANGED_PARAMETERS + 2)
+            .map(|i| done(ActionKind::SetValue, "Amp", &format!("P{i}"), "0", "1"))
+            .collect();
+        record_changes(&mut log, &changes);
+        assert_eq!(log.len(), MAX_CHANGED_PARAMETERS);
+        assert_eq!(log[0].parameter, "P2");
+        assert_eq!(MAX_CHANGED_PARAMETERS, 24);
     }
 }

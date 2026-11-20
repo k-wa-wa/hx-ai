@@ -186,6 +186,10 @@ async fn selecting_a_block_recaptures_and_asks_again() {
     let second = e.request_text(1);
     assert!(second.contains("ブロック「Delay」を選んだ"), "{second}");
     assert!(second.contains("Bass: 5.0 → 6.0"), "{second}");
+    // 撮り直した後は音声を送らず、1 回目の説明で方針を伝える
+    assert!(!e.requests[1].to_string().contains("input_audio"));
+    assert!(e.requests[0].to_string().contains("input_audio"));
+    assert!(second.contains("- 説明"), "{second}");
     // ブロック選択は値の変更として数えない
     assert_eq!(r.changes.len(), 2);
     assert_eq!(undo_stack(&s)[0].len(), 2);
@@ -418,4 +422,29 @@ async fn revert_without_history_is_an_error() {
     let err = workflow::revert(&mut e, &s, "m").await.unwrap_err();
     assert!(err.contains("戻せる変更がありません"));
     assert!(e.requests.is_empty());
+}
+
+#[tokio::test]
+async fn changed_parameters_are_carried_to_later_requests() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![
+        answer(vec![set("Treble", 500.0, "7.2", "6.5")]),
+        answer(vec![]),
+    ]);
+    adjust(&mut e, &s).await;
+    assert!(!e.request_text(0).contains("アプリが打ち込んだ値"));
+    adjust(&mut e, &s).await;
+    assert!(e.request_text(1).contains("- Amp / Treble: 6.5"));
+}
+
+#[tokio::test]
+async fn reverted_values_update_changed_parameters() {
+    let s = state();
+    s.undo_stack
+        .lock()
+        .unwrap()
+        .push(vec![target("Treble", "7.2")]);
+    let mut e = FakeEngine::new(vec![answer(vec![set("Treble", 500.0, "6.5", "7.2")])]);
+    workflow::revert(&mut e, &s, "m").await.unwrap();
+    assert_eq!(*s.changed.lock().unwrap(), vec![target("Treble", "7.2")]);
 }

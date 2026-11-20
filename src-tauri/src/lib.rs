@@ -168,6 +168,7 @@ fn undo_depth(state: State<AppState>) -> usize {
 #[tauri::command]
 fn clear_conversation(state: State<AppState>) -> Result<(), String> {
     state.chat.lock().map_err(|e| e.to_string())?.clear();
+    state.changed.lock().map_err(|e| e.to_string())?.clear();
     Ok(())
 }
 
