@@ -1,7 +1,8 @@
 //! AI 接続先や操作対象アプリの設定。
 //!
-//! 設定画面で保存した値 (アプリの設定ディレクトリの settings.json) を優先し、
-//! 空の項目だけ環境変数 (.env を含む) で補う。API キーはどちらにも無ければエラーにする。
+//! 設定画面で保存した値 (アプリの設定ディレクトリの settings.json) を使う。
+//! 開発時 (debug ビルド) だけ、空の項目を環境変数 (.env を含む) で補う。
+//! API キーが無ければエラーにする。
 
 use std::path::{Path, PathBuf};
 
@@ -56,6 +57,18 @@ pub fn process_env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
+pub fn no_env(_key: &str) -> Option<String> {
+    None
+}
+
+/// 環境変数と .env を使うか。開発時 (debug ビルド) だけ使い、配布する .app は設定画面の値だけを使う。
+pub const USE_ENV: bool = cfg!(debug_assertions);
+
+/// アプリが設定の解決に使う環境変数の読み方。
+pub fn app_env(use_env: bool) -> fn(&str) -> Option<String> {
+    if use_env { process_env } else { no_env }
+}
+
 fn non_empty(s: &str) -> Option<String> {
     let t = s.trim();
     (!t.is_empty()).then(|| t.to_string())
@@ -67,10 +80,8 @@ fn pick(stored: &str, env: EnvLookup, env_key: &str) -> Option<String> {
 
 impl StoredSettings {
     pub fn resolve(&self, env: EnvLookup) -> Result<ResolvedSettings, String> {
-        let api_key = pick(&self.api_key, env, "OPENAI_API_KEY").ok_or_else(|| {
-            "API キーがありません。設定画面で入力するか、.env に OPENAI_API_KEY を書いてください"
-                .to_string()
-        })?;
+        let api_key = pick(&self.api_key, env, "OPENAI_API_KEY")
+            .ok_or_else(|| "API キーがありません。設定 (⚙︎) で入力してください".to_string())?;
         Ok(ResolvedSettings {
             api_base_url: pick(&self.api_base_url, env, "OPENAI_BASE_URL")
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
@@ -189,11 +200,21 @@ mod tests {
     fn missing_api_key_is_an_error() {
         let env = env_with(&[]);
         let err = StoredSettings::default().resolve(&env).unwrap_err();
-        assert!(err.contains("OPENAI_API_KEY"));
+        assert!(err.contains("設定 (⚙︎) で入力"), "{err}");
         assert_eq!(
             StoredSettings::default().view(&env).api_key_source,
             "missing"
         );
+    }
+
+    #[test]
+    fn env_is_used_only_when_allowed() {
+        // PATH はどの環境でも設定されている
+        assert!(app_env(true)("PATH").is_some());
+        assert_eq!(app_env(false)("PATH"), None);
+        // 配布する .app では .env の API キーを使わない
+        let r = StoredSettings::default().resolve(&app_env(false));
+        assert!(r.is_err());
     }
 
     #[test]

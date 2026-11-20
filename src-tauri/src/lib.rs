@@ -64,7 +64,7 @@ fn get_settings(state: State<AppState>) -> Result<SettingsView, String> {
         .stored
         .lock()
         .map_err(|e| e.to_string())?
-        .view(&config::process_env))
+        .view(&config::app_env(config::USE_ENV)))
 }
 
 #[tauri::command]
@@ -81,7 +81,7 @@ fn save_settings(state: State<AppState>, input: SettingsInput) -> Result<Setting
     };
     config::save(&state.settings_path, &next)?;
     *stored = next;
-    Ok(stored.view(&config::process_env))
+    Ok(stored.view(&config::app_env(config::USE_ENV)))
 }
 
 #[tauri::command]
@@ -104,7 +104,9 @@ fn grant_permission(kind: String) -> Result<(), String> {
 #[tauri::command]
 async fn find_target_window(state: State<'_, AppState>) -> Result<capture::TargetWindow, String> {
     let settings = state.stored.lock().map_err(|e| e.to_string())?.clone();
-    let app_name = settings.view(&config::process_env).effective_target_app;
+    let app_name = settings
+        .view(&config::app_env(config::USE_ENV))
+        .effective_target_app;
     tauri::async_runtime::spawn_blocking(move || capture::find_target_window(&app_name))
         .await
         .map_err(|e| e.to_string())?
@@ -228,7 +230,9 @@ async fn undo_last(app: AppHandle, state: State<'_, AppState>) -> Result<CycleRe
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 開発時はリポジトリ直下の .env を読む。無くてもよい (設定画面で入力できる)
-    let _ = dotenvy::dotenv();
+    if config::USE_ENV {
+        let _ = dotenvy::dotenv();
+    }
 
     tauri::Builder::default()
         .setup(|app| {

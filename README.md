@@ -6,8 +6,8 @@ Tauri v2 (Rust) + React + TypeScript で作り、AI は OpenAI 互換の Chat Co
 
 ## 使い方
 
-1. `.env` に `OPENAI_API_KEY` を書く (設定画面で入力してもよい)。
-2. `npm install` してから `npm run tauri dev` で起動する。
+1. `npm install` してから `npm run tauri dev` で起動する。
+2. 右上の ⚙︎ (設定) で API キーを入れる。
 3. 右上の ⚙︎ (設定) の「macOS の権限」で、マイク・画面収録・アクセシビリティを「許可する」。権限が揃っていなければ、起動時に設定が開く。一度拒否した権限はダイアログが出ないので、「許可する」はシステム設定の該当ページを開く。
 4. HX Edit を開き、このアプリと重ならないように横に並べる。
 5. 手動モードか自動ループを選ぶ (下)。
@@ -35,9 +35,11 @@ Tauri v2 (Rust) + React + TypeScript で作り、AI は OpenAI 互換の Chat Co
 
 ## 設定
 
-設定画面の値 → `.env` / 環境変数 → 既定値 の順に使う。`.env` は起動したディレクトリから上にたどって探すので、リポジトリで `npm run tauri dev` したときだけ効く。Finder から `.app` を開くときは設定画面でキーを入れる。設定画面の値は `~/Library/Application Support/com.kwawa.hxai/settings.json` (権限 600) に保存する。
+設定画面の値 → 既定値 の順に使う。API キーは設定画面で入れないと使えない。設定画面の値は `~/Library/Application Support/com.kwawa.hxai/settings.json` (権限 600) に保存する。
 
-| 項目 | 環境変数 | 既定値 |
+開発時 (debug ビルド。`npm run tauri dev`) だけは、設定画面で空の項目を `.env` / 環境変数で補う。配布する `.app` (release ビルド) は `.env` も環境変数も読まない。
+
+| 項目 | 開発時の環境変数 | 既定値 |
 | --- | --- | --- |
 | API キー | `OPENAI_API_KEY` | なし (無ければエラー) |
 | base URL | `OPENAI_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta/openai/` |

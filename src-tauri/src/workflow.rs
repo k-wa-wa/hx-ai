@@ -128,7 +128,7 @@ impl AppState {
         self.stored
             .lock()
             .map_err(|e| e.to_string())?
-            .resolve(&config::process_env)
+            .resolve(&config::app_env(config::USE_ENV))
     }
 
     pub fn undo_depth(&self) -> usize {
