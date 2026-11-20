@@ -6,8 +6,8 @@
 //! (1200×800 ポイント) である。数値欄の中心は x = 100 + 140 * i, y = 712 ポイントにある。
 
 use crate::ai::{self, ActionKind, AiResponse, AudioFormat, Purpose, RequestInput, RestoreTarget};
-use crate::audio;
 use crate::config::{self, StoredSettings};
+use crate::sound;
 
 const SCREENSHOT: &[u8] = include_bytes!("../tests/fixtures/mock_hx_edit.png");
 const SCREENSHOT_SIZE: (u32, u32) = (2400, 1600);
@@ -30,7 +30,7 @@ fn bright_tone_wav() -> Vec<u8> {
         samples.push(s);
         samples.push(s);
     }
-    audio::encode_wav(&samples, 2, sr).unwrap()
+    sound::encode_wav(&samples, 2, sr).unwrap()
 }
 
 async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {

@@ -488,13 +488,16 @@ pub async fn run_cycle(
         "record",
         format!("{seconds} 秒録音中… ギターを弾いてください"),
     );
-    let recording = blocking(move || crate::audio::record(device_id.as_deref(), seconds)).await?;
+    let recording = blocking(move || {
+        crate::sound::prepare_recording(&crate::audio::record(device_id.as_deref(), seconds)?)
+    })
+    .await?;
     emit_progress(
         &app,
         "record",
         format!(
-            "録音完了 ({} Hz / {}ch, ピーク {:.1} dBFS)",
-            recording.sample_rate, recording.channels, recording.peak_dbfs
+            "録音完了 ({:.1} 秒, ピーク {:.1} dBFS)",
+            recording.seconds, recording.peak_dbfs
         ),
     );
 

@@ -3,6 +3,7 @@
 
 exclude_globs = [
   "src/macos.rs",
+  "src/audio.rs",
   "src/capture.rs",
   "src/lib.rs",
   "src/*_test.rs",
@@ -18,14 +19,6 @@ exclude_re = [
   "ensure_permissions",
   "workflow::run_cycle",
   "workflow::undo_last",
-  "in list_input_devices$",
-  "replace list_input_devices ",
-  "in find_device$",
-  "replace find_device ",
-  "in build$",
-  # 録音の中の判定は check_duration / check_not_silent に切り出してテストしている
-  "in record$",
-  "replace record ",
   "replace process_env ",
   "open_prompt_to_get_permissions",
   # 待ち時間は 0 で走らせるので、値を変えてもテストでは区別できない

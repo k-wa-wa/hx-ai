@@ -9,6 +9,7 @@ mod capture;
 mod config;
 mod geometry;
 mod macos;
+mod sound;
 mod workflow;
 #[cfg(test)]
 mod workflow_test;
