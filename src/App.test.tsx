@@ -28,24 +28,13 @@ describe("起動時", () => {
     expect(screen.getByTitle("オーディオ入力")).toHaveValue("coreaudio:builtin");
   });
 
-  it("API キーが無ければ設定画面を開く", async () => {
-    setupBackend({ get_settings: () => ({ ...SETTINGS, api_key_source: "missing" }) });
+  it("権限や API キーが無くても設定を勝手に開かない", async () => {
+    const b = setupBackend({
+      get_settings: () => ({ ...SETTINGS, api_key_source: "missing" }),
+      permission_status: () => ({ ...GRANTED, accessibility: "denied" }),
+    });
     await renderApp();
-    expect(await screen.findByText("API キーがありません")).toBeInTheDocument();
-  });
-
-  it("権限が揃っていなければ設定画面を開き、権限を案内する", async () => {
-    setupBackend({ permission_status: () => ({ ...GRANTED, accessibility: "denied" }) });
-    await renderApp();
-    expect(await screen.findByText("macOS の権限")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "許可する" })).toHaveLength(1);
-    expect(screen.getByLabelText("モデル")).toBeInTheDocument();
-  });
-
-  it("権限が揃っていれば設定画面を開かない", async () => {
-    setupBackend();
-    await renderApp();
-    expect(screen.queryByText("macOS の権限")).not.toBeInTheDocument();
+    expect(b.callsTo("open_settings_window")).toEqual([]);
   });
 
   it("常に手前に表示は使わない", async () => {
@@ -55,41 +44,25 @@ describe("起動時", () => {
   });
 });
 
-describe("macOS の権限", () => {
-  it("「許可する」で許可を求め、少し後に状態を確かめ直す", async () => {
-    let status = { ...GRANTED, screen_recording: "denied" };
-    const b = setupBackend({
-      permission_status: () => status,
-      grant_permission: () => {
-        status = GRANTED;
-        return null;
-      },
-    });
+describe("設定", () => {
+  it("⚙︎ で設定ウィンドウを開く", async () => {
+    const b = setupBackend({ open_settings_window: () => null });
     const user = await renderApp();
-    await user.click(await screen.findByRole("button", { name: "許可する" }));
-    expect(b.callsTo("grant_permission")).toEqual([{ kind: "screen_recording" }]);
-    await waitFor(() => expect(screen.queryByRole("button", { name: "許可する" })).not.toBeInTheDocument());
-    expect(screen.getAllByText("許可済み")).toHaveLength(3);
+    await user.click(screen.getByTitle("設定"));
+    await waitFor(() => expect(b.callsTo("open_settings_window")).toHaveLength(1));
+    expect(screen.queryByLabelText("モデル")).not.toBeInTheDocument();
   });
 
-  it("↻ で状態を確かめ直す", async () => {
-    const b = setupBackend({ permission_status: () => ({ ...GRANTED, microphone: "not_determined" }) });
-    const user = await renderApp();
-    const before = b.callsTo("permission_status").length;
-    await user.click(await screen.findByRole("button", { name: "再確認" }));
-    await waitFor(() => expect(b.callsTo("permission_status").length).toBe(before + 1));
-  });
-
-  it("許可を求められないときはエラーを出す", async () => {
+  it("設定ウィンドウで保存した設定を反映する", async () => {
     setupBackend({
-      permission_status: () => ({ ...GRANTED, microphone: "denied" }),
-      grant_permission: () => {
-        throw "システム設定を開けません";
+      find_target_window: () => {
+        throw "見つかりません";
       },
     });
-    const user = await renderApp();
-    await user.click(await screen.findByRole("button", { name: "許可する" }));
-    expect(await screen.findByText("システム設定を開けません")).toBeInTheDocument();
+    await renderApp();
+    expect(await screen.findByText("HX Edit 未検出")).toBeInTheDocument();
+    await emit("settings_changed", { ...SETTINGS, effective_target_app: "HX Edit 3" });
+    expect(await screen.findByText("HX Edit 3 未検出")).toBeInTheDocument();
   });
 });
 
@@ -533,44 +506,5 @@ describe("リファレンス", () => {
     await renderApp();
     await drop();
     expect(await screen.findByText("音源ファイルを読めません")).toBeInTheDocument();
-  });
-});
-
-describe("設定", () => {
-  async function openSettings() {
-    const user = await renderApp();
-    await user.click(screen.getByTitle("設定"));
-    return user;
-  }
-
-  it("キー欄が空なら保存済みのキーを変えない (null を送る)", async () => {
-    const b = setupBackend({ save_settings: () => SETTINGS });
-    const user = await openSettings();
-    await user.type(screen.getByLabelText("モデル"), "other-model");
-    await user.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(b.callsTo("save_settings")).toHaveLength(1));
-    expect(b.callsTo("save_settings")[0]).toEqual({
-      input: { apiBaseUrl: "", apiKey: null, model: "other-model", targetApp: "" },
-    });
-  });
-
-  it("入力したキーを送り、送った後は欄を空にする", async () => {
-    const b = setupBackend({ save_settings: () => SETTINGS });
-    const user = await openSettings();
-    await user.type(screen.getByLabelText("API キー"), "sk-new");
-    await user.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(b.callsTo("save_settings")).toHaveLength(1));
-    expect(b.callsTo("save_settings")[0]).toMatchObject({ input: { apiKey: "sk-new" } });
-    expect(screen.getByLabelText("API キー")).toHaveValue("");
-  });
-
-  it("「保存したキーを消す」なら空文字を送る", async () => {
-    const withKey = { ...SETTINGS, stored: { ...SETTINGS.stored, has_api_key: true } };
-    const b = setupBackend({ get_settings: () => withKey, save_settings: () => SETTINGS });
-    const user = await openSettings();
-    await user.click(screen.getByLabelText("保存したキーを消す"));
-    await user.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(b.callsTo("save_settings")).toHaveLength(1));
-    expect(b.callsTo("save_settings")[0]).toMatchObject({ input: { apiKey: "" } });
   });
 });

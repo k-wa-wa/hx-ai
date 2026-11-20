@@ -22,6 +22,7 @@ export function SettingsPanel({
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     if (!view) return;
@@ -41,6 +42,7 @@ export function SettingsPanel({
       });
       setApiKey("");
       setClearKey(false);
+      setSaved(true);
       onSaved(next);
     } catch (e) {
       onError(errorText(e));
@@ -101,9 +103,12 @@ export function SettingsPanel({
           spellCheck={false}
         />
       </label>
-      <button className="primary" onClick={save} disabled={saving}>
-        {saving ? "保存中…" : "保存"}
-      </button>
+      <div className="row">
+        <button className="primary" onClick={save} disabled={saving}>
+          保存
+        </button>
+        {saved && <span className="muted small">保存した</span>}
+      </div>
     </section>
   );
 }

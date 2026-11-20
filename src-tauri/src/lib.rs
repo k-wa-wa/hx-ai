@@ -16,7 +16,7 @@ mod workflow;
 mod workflow_test;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::ai::AudioFormat;
 use crate::config::{SettingsView, StoredSettings};
@@ -67,8 +67,33 @@ fn get_settings(state: State<AppState>) -> Result<SettingsView, String> {
         .view(&config::app_env(config::USE_ENV)))
 }
 
+/// 設定ウィンドウを開く。開いていれば前に出す。
 #[tauri::command]
-fn save_settings(state: State<AppState>, input: SettingsInput) -> Result<SettingsView, String> {
+async fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    if let Some(w) = app.get_webview_window("settings") {
+        w.show().map_err(|e| e.to_string())?;
+        return w.set_focus().map_err(|e| e.to_string());
+    }
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "settings",
+        tauri::WebviewUrl::App("settings.html".into()),
+    )
+    .title("HX AI 設定")
+    .inner_size(380.0, 600.0)
+    .min_inner_size(320.0, 400.0)
+    .build()
+    .map_err(|e| format!("設定ウィンドウを開けません: {e}"))?;
+    Ok(())
+}
+
+/// 設定を保存し、メイン画面に "settings_changed" で知らせる。
+#[tauri::command]
+fn save_settings(
+    app: AppHandle,
+    state: State<AppState>,
+    input: SettingsInput,
+) -> Result<SettingsView, String> {
     let mut stored = state.stored.lock().map_err(|e| e.to_string())?;
     let next = StoredSettings {
         api_base_url: input.api_base_url.trim().to_string(),
@@ -81,7 +106,9 @@ fn save_settings(state: State<AppState>, input: SettingsInput) -> Result<Setting
     };
     config::save(&state.settings_path, &next)?;
     *stored = next;
-    Ok(stored.view(&config::app_env(config::USE_ENV)))
+    let view = stored.view(&config::app_env(config::USE_ENV));
+    let _ = app.emit("settings_changed", &view);
+    Ok(view)
 }
 
 #[tauri::command]
@@ -92,7 +119,7 @@ async fn list_input_devices() -> Result<Vec<audio::InputDevice>, String> {
 }
 
 #[tauri::command]
-fn permission_status() -> macos::PermissionStatus {
+fn permission_status() -> permission::PermissionStatus {
     macos::permission_status()
 }
 
@@ -244,6 +271,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
+            open_settings_window,
             save_settings,
             list_input_devices,
             permission_status,

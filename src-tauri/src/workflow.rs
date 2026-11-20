@@ -19,6 +19,7 @@ use crate::automation::{self, Outcome};
 use crate::capture::{self, Screenshot, TargetWindow};
 use crate::config::{self, ResolvedSettings, StoredSettings};
 use crate::macos;
+use crate::permission;
 use crate::sound::{self, MAX_RECORD_SECONDS, Prepared, ReferenceClip, ReferenceTrack};
 
 /// 1 サイクルで撮り直して AI に聞き直す回数の上限。
@@ -325,27 +326,22 @@ impl Engine for TauriEngine {
 }
 
 /// 処理を始める前に権限を確かめる。弾き終わってから失敗させないため、録音の前に見る。
-/// マイクが未確認 (not_determined) のときは録音を始めると macOS が許可を求めるので通す。
+/// 足りなければ、その場で許可を求め (ダイアログかシステム設定を開く)、エラーにする。
 fn ensure_permissions(need_microphone: bool) -> Result<(), String> {
-    let s = macos::permission_status();
-    let mut missing = Vec::new();
-    if need_microphone && s.microphone == "denied" {
-        missing.push("マイク");
-    }
-    if s.screen_recording != "granted" {
-        missing.push("画面収録");
-    }
-    if s.accessibility != "granted" {
-        missing.push("アクセシビリティ");
-    }
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{} の権限がありません。右上の ⚙︎ (設定) の「macOS の権限」から許可してください",
-            missing.join("・")
-        ))
-    }
+    let missing = permission::missing(&macos::permission_status(), need_microphone);
+    let Some((first, _)) = missing.first() else {
+        return Ok(());
+    };
+    let names = missing
+        .iter()
+        .map(|(_, n)| *n)
+        .collect::<Vec<_>>()
+        .join("・");
+    macos::grant_permission(first)
+        .map_err(|e| format!("{names} の権限が必要ですが、許可を求められませんでした: {e}"))?;
+    Err(format!(
+        "{names} の権限が必要です。許可してから、もう一度実行してください"
+    ))
 }
 
 /// 1 サイクルの間、撮り直しても変わらない AI への入力。
@@ -823,10 +819,8 @@ pub fn start_recording(state: &AppState, device_id: Option<String>) -> Result<()
         return Err("処理中は録音できません".to_string());
     }
     if macos::permission_status().microphone == "denied" {
-        return Err(
-            "マイクの権限がありません。右上の ⚙︎ (設定) の「macOS の権限」から許可してください"
-                .to_string(),
-        );
+        macos::grant_permission("microphone")?;
+        return Err("マイクの権限が必要です。許可してから、もう一度録音してください".to_string());
     }
     let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
     if recorder.is_some() {

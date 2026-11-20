@@ -112,6 +112,7 @@ export interface Progress {
 
 export const api = {
   getSettings: () => invoke<SettingsView>("get_settings"),
+  openSettingsWindow: () => invoke<void>("open_settings_window"),
   saveSettings: (input: SettingsInput) => invoke<SettingsView>("save_settings", { input }),
   listInputDevices: () => invoke<InputDevice[]>("list_input_devices"),
   permissionStatus: () => invoke<PermissionStatus>("permission_status"),

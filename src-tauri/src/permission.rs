@@ -1,4 +1,33 @@
-//! 「許可する」を押したときに何をするかの判断。macOS を呼ぶのは `macos` で行う。
+//! 権限が足りているか、「許可する」を押したときに何をするかの判断。macOS を呼ぶのは `macos` で行う。
+
+use serde::Serialize;
+
+/// "granted" | "denied" | "not_determined"
+#[derive(Debug, Clone, Serialize)]
+pub struct PermissionStatus {
+    pub microphone: String,
+    pub screen_recording: String,
+    pub accessibility: String,
+}
+
+/// 処理を始める前に足りない権限 (種類と表示名)。マイクが未確認 (not_determined) のときは
+/// 録音を始めると macOS が許可を求めるので、足りないとはみなさない。
+pub fn missing(
+    status: &PermissionStatus,
+    need_microphone: bool,
+) -> Vec<(&'static str, &'static str)> {
+    let mut out = Vec::new();
+    if need_microphone && status.microphone == "denied" {
+        out.push(("microphone", "マイク"));
+    }
+    if status.screen_recording != "granted" {
+        out.push(("screen_recording", "画面収録"));
+    }
+    if status.accessibility != "granted" {
+        out.push(("accessibility", "アクセシビリティ"));
+    }
+    out
+}
 
 /// 「許可する」を押したときにすること。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +75,42 @@ pub fn settings_url(kind: &str) -> Result<&'static str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn status(mic: &str, screen: &str, ax: &str) -> PermissionStatus {
+        PermissionStatus {
+            microphone: mic.into(),
+            screen_recording: screen.into(),
+            accessibility: ax.into(),
+        }
+    }
+
+    fn kinds(v: Vec<(&str, &str)>) -> Vec<String> {
+        v.into_iter().map(|(k, _)| k.to_string()).collect()
+    }
+
+    #[test]
+    fn nothing_missing_when_all_granted() {
+        assert!(missing(&status("granted", "granted", "granted"), true).is_empty());
+    }
+
+    #[test]
+    fn microphone_is_missing_only_when_denied_and_needed() {
+        let s = status("denied", "granted", "granted");
+        assert_eq!(kinds(missing(&s, true)), vec!["microphone"]);
+        assert!(missing(&s, false).is_empty(), "録音しないなら要らない");
+        // 未確認なら録音を始めたときに macOS が聞くので通す
+        assert!(missing(&status("not_determined", "granted", "granted"), true).is_empty());
+    }
+
+    #[test]
+    fn screen_and_accessibility_are_always_needed() {
+        let s = status("granted", "denied", "denied");
+        assert_eq!(
+            kinds(missing(&s, false)),
+            vec!["screen_recording", "accessibility"]
+        );
+        assert_eq!(missing(&s, false)[0].1, "画面収録");
+    }
 
     const NOTHING: GrantPlan = GrantPlan {
         ask: false,

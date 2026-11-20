@@ -6,7 +6,6 @@ import {
   errorText,
   InputDevice,
   LoopIteration,
-  PermissionStatus,
   Progress,
   RecordingInfo,
   SettingsView,
@@ -14,9 +13,7 @@ import {
 } from "./api";
 import { ChatLog, ChatMessage } from "./components/ChatLog";
 import { pickDevice } from "./devices";
-import { allGranted, PermissionPanel } from "./components/PermissionPanel";
 import { formatTime, ReferenceDrop } from "./components/ReferenceDrop";
-import { SettingsPanel } from "./components/SettingsPanel";
 import "./App.css";
 
 /** 手動の録音の上限 (秒)。Rust 側の MAX_RECORD_SECONDS と同じ。 */
@@ -56,11 +53,9 @@ export default function App() {
     const v = Number(loadPref("maxIterations"));
     return LOOP_ITERATIONS.includes(v) ? v : 10;
   });
-  const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [target, setTarget] = useState<TargetWindow | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
@@ -78,14 +73,6 @@ export default function App() {
     setMessages((prev) => [...prev, { ...m, id: nextId++ }]);
   }, []);
   const pushError = useCallback((text: string) => push({ role: "error", text }), [push]);
-
-  const refreshPermissions = useCallback(async () => {
-    try {
-      setPermissions(await api.permissionStatus());
-    } catch (e) {
-      pushError(errorText(e));
-    }
-  }, [pushError]);
 
   const refreshDevices = useCallback(async () => {
     try {
@@ -110,37 +97,24 @@ export default function App() {
   // 起動時
   useEffect(() => {
     (async () => {
-      await refreshPermissions();
       await refreshDevices();
       // 画面を読み込み直しても、Rust 側に残っている Undo 履歴を使えるようにする
       api.undoDepth().then(setUndoDepth).catch((e) => pushError(errorText(e)));
       try {
-        const s = await api.getSettings();
-        setSettings(s);
-        if (s.api_key_source === "missing") setSettingsOpen(true);
+        setSettings(await api.getSettings());
       } catch (e) {
         pushError(errorText(e));
       }
     })();
-  }, [refreshPermissions, refreshDevices, pushError]);
+  }, [refreshDevices, pushError]);
 
-  // 権限が揃っていなければ最初に設定画面を開いて案内する
+  // 設定ウィンドウで保存したら反映する
   useEffect(() => {
-    if (permissions && !allGranted(permissions) && messages.length === 0) {
-      setSettingsOpen(true);
-    }
-    // 起動直後の 1 回だけでよい
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [permissions]);
-
-  // ウィンドウに戻ってきたら権限を確かめ直す (システム設定で許可した後など)
-  useEffect(() => {
-    const onFocus = () => {
-      refreshPermissions();
+    const un = listen<SettingsView>("settings_changed", (e) => setSettings(e.payload));
+    return () => {
+      un.then((f) => f());
     };
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [refreshPermissions]);
+  }, []);
 
   // HX Edit の検出状態を定期的に見る
   useEffect(() => {
@@ -376,28 +350,14 @@ export default function App() {
         <div className="brand">HX AI</div>
         <div className="header-actions">
           <button
-            className={`icon-btn ${settingsOpen ? "active" : ""}`}
-            onClick={() => setSettingsOpen((v) => !v)}
+            className="icon-btn"
+            onClick={() => api.openSettingsWindow().catch((e) => pushError(errorText(e)))}
             title="設定"
           >
             ⚙︎
           </button>
         </div>
       </header>
-
-      {settingsOpen && (
-        <PermissionPanel status={permissions} onRefresh={refreshPermissions} onError={pushError} />
-      )}
-      {settingsOpen && (
-        <SettingsPanel
-          view={settings}
-          onSaved={(v) => {
-            setSettings(v);
-            push({ role: "system", text: `設定を保存した (モデル: ${v.effective_model})` });
-          }}
-          onError={pushError}
-        />
-      )}
 
       <section className="controls">
         <div className="row">

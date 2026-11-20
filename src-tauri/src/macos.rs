@@ -10,12 +10,11 @@ use objc2::runtime::Bool;
 use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
 use objc2_foundation::{NSDictionary, NSNumber, NSString};
-use serde::Serialize;
 
 use crate::automation::Desktop;
 use crate::capture;
 use crate::geometry::{Rect, ScreenWindow};
-use crate::permission;
+use crate::permission::{self, PermissionStatus};
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -28,14 +27,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
-}
-
-/// "granted" | "denied" | "not_determined"
-#[derive(Debug, Clone, Serialize)]
-pub struct PermissionStatus {
-    pub microphone: String,
-    pub screen_recording: String,
-    pub accessibility: String,
 }
 
 fn bool_status(granted: bool) -> String {
