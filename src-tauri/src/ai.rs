@@ -54,6 +54,9 @@ pub struct AiResponse {
     pub actions: Vec<AiAction>,
     #[serde(default)]
     pub needs_another_round: bool,
+    /// 目標に届いたので、これ以上変えなくてよいか (自動ループはこれで止まる)。
+    #[serde(default)]
+    pub goal_reached: bool,
 }
 
 /// 音源ファイルの形式。OpenAI 互換 API の `input_audio.format` にそのまま入る。
@@ -177,6 +180,10 @@ pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp を HX Edit (mac
 - それ以外のときは needs_another_round を false にする。
 - 選び直した後は撮り直したスクリーンショットだけを渡し、音声は渡さない。select_block を返すときは、選んだ後に変える予定のパラメータと変える向きを explanation に書いておくこと。
 
+目標への到達:
+- 録音がユーザーの指示 (とリファレンス) に十分近く、これ以上変える必要が無いと判断したら goal_reached を true にし、actions を空にする。
+- まだ変える余地があるなら goal_reached を false にする。自動ループでは、録音 → あなたへの問い合わせ → 変更 を、goal_reached が true になるまで繰り返す。前回の変更で行き過ぎたと聴こえたら戻してよい。
+
 explanation は日本語で、何をなぜ変えるのか、録音とリファレンスの違いをどう聴いたのかを簡潔に書く。"#;
 
 /// 応答の JSON スキーマ。Gemini の OpenAI 互換エンドポイントで通る範囲に留める。
@@ -201,9 +208,10 @@ pub fn response_schema() -> Value {
                     "required": ["type", "block", "parameter", "x", "y", "value", "previous_value"]
                 }
             },
-            "needs_another_round": { "type": "boolean" }
+            "needs_another_round": { "type": "boolean" },
+            "goal_reached": { "type": "boolean" }
         },
-        "required": ["explanation", "actions", "needs_another_round"]
+        "required": ["explanation", "actions", "needs_another_round", "goal_reached"]
     })
 }
 
@@ -567,6 +575,7 @@ mod tests {
             explanation: "x".into(),
             actions,
             needs_another_round: false,
+            goal_reached: false,
         }
     }
 
@@ -600,6 +609,7 @@ mod tests {
             explanation: String::new(),
             actions: vec![action(ActionKind::SetValue, "1")],
             needs_another_round: false,
+            goal_reached: false,
         };
         let json = serde_json::to_value(&sample).unwrap();
         assert_eq!(keys(&schema["properties"]), keys(&json));
@@ -977,6 +987,11 @@ mod tests {
         assert!(text(false, true).contains("リファレンスは無い"));
         assert!(text(true, false).contains("現在の音は録音されていない"));
         assert!(text(false, false).contains("音声は無い"));
+    }
+
+    #[test]
+    fn system_prompt_explains_goal_reached() {
+        assert!(SYSTEM_PROMPT.contains("goal_reached を true にし、actions を空にする"));
     }
 
     #[test]

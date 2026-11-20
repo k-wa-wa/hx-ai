@@ -19,7 +19,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::ai::AudioFormat;
 use crate::config::{SettingsView, StoredSettings};
-use crate::workflow::{AppState, CycleReport, Reference};
+use crate::workflow::{AppState, CycleReport, LoopSummary, RecordingInfo, Reference};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,14 +173,55 @@ fn clear_conversation(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn run_cycle(
+fn start_recording(state: State<AppState>, device_id: Option<String>) -> Result<(), String> {
+    workflow::start_recording(&state, device_id)
+}
+
+#[tauri::command]
+async fn stop_recording(state: State<'_, AppState>) -> Result<RecordingInfo, String> {
+    workflow::stop_recording(&state).await
+}
+
+#[tauri::command]
+fn discard_recording(state: State<AppState>) -> Result<(), String> {
+    *state.pending.lock().map_err(|e| e.to_string())? = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn send_message(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    instruction: String,
+) -> Result<CycleReport, String> {
+    workflow::send_message(app, &state, instruction).await
+}
+
+#[tauri::command]
+async fn start_loop(
     app: AppHandle,
     state: State<'_, AppState>,
     instruction: String,
     device_id: Option<String>,
     seconds: u32,
-) -> Result<CycleReport, String> {
-    workflow::run_cycle(app, &state, instruction, device_id, seconds).await
+    max_iterations: usize,
+) -> Result<LoopSummary, String> {
+    workflow::run_loop(app, &state, instruction, device_id, seconds, max_iterations).await
+}
+
+#[tauri::command]
+fn stop_loop(state: State<AppState>) {
+    state
+        .loop_stop
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn add_loop_instruction(state: State<AppState>, text: String) -> Result<(), String> {
+    workflow::add_loop_instruction(
+        &mut *state.loop_extra.lock().map_err(|e| e.to_string())?,
+        &text,
+    )
 }
 
 #[tauri::command]
@@ -216,7 +257,13 @@ pub fn run() {
             clear_reference,
             undo_depth,
             clear_conversation,
-            run_cycle,
+            start_recording,
+            stop_recording,
+            discard_recording,
+            send_message,
+            start_loop,
+            stop_loop,
+            add_loop_instruction,
             undo_last,
         ])
         .run(tauri::generate_context!())

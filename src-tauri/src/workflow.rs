@@ -1,9 +1,10 @@
-//! 1 サイクル (録音 → キャプチャ → AI → 自動操作) と Undo の流れ。
+//! 1 サイクル (キャプチャ → AI → 自動操作) と Undo、自動ループの流れ。
 //!
-//! キャプチャ・AI・自動操作は `Engine` トレイトの向こうに置き、テストでは偽物に差し替える。
+//! 録音・キャプチャ・AI・自動操作は `Engine` トレイトの向こうに置き、テストでは偽物に差し替える。
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -13,11 +14,12 @@ use crate::ai::{
     self, ActionKind, AiAction, AiResponse, AudioFormat, ChatTurn, DoneAction, Purpose,
     RequestInput, RestoreTarget,
 };
+use crate::audio;
 use crate::automation::{self, Outcome};
 use crate::capture::{self, Screenshot, TargetWindow};
 use crate::config::{self, ResolvedSettings, StoredSettings};
 use crate::macos;
-use crate::sound::{ReferenceClip, ReferenceTrack};
+use crate::sound::{self, MAX_RECORD_SECONDS, Prepared, ReferenceClip, ReferenceTrack};
 
 /// 1 サイクルで撮り直して AI に聞き直す回数の上限。
 pub const MAX_ROUNDS: usize = 4;
@@ -33,6 +35,18 @@ pub const MAX_UNDO_GROUPS: usize = 20;
 
 /// AI に伝える「このセッションで変えたパラメータ」の数。古いものから忘れる。
 pub const MAX_CHANGED_PARAMETERS: usize = 24;
+
+/// 自動ループで、変えた値が音に反映されるのを待ってから次の録音を始める。
+pub const LOOP_SETTLE: Duration = Duration::from_secs(1);
+/// 自動ループで、続けてこの回数失敗したら止める。
+pub const MAX_CONSECUTIVE_FAILURES: usize = 3;
+/// 自動ループの回数の上限として選べる最大値。
+pub const MAX_LOOP_ITERATIONS: usize = 50;
+/// 自動ループ中に追加された指示を覚えておく数。古いものから忘れる。
+pub const MAX_LOOP_EXTRA_INSTRUCTIONS: usize = 5;
+
+/// 停止の合図を受けたため、AI の提案を実行せずに止めたときのエラー。
+pub const STOPPED_BEFORE_EXECUTE: &str = "停止の合図を受けたので、AI の提案は実行していません";
 
 pub struct Reference {
     pub name: String,
@@ -83,6 +97,14 @@ pub struct AppState {
     /// 切り詰めて送るので、どのパラメータをどこまで動かしたかはこちらで伝える。
     pub changed: Mutex<Vec<RestoreTarget>>,
     pub busy: AtomicBool,
+    /// 手動モードで録音中の入力。
+    pub recorder: Mutex<Option<audio::Recorder>>,
+    /// 手動モードで録り終えて、まだ送っていない録音。
+    pub pending: Mutex<Option<Prepared>>,
+    /// 自動ループの停止の合図。
+    pub loop_stop: Arc<AtomicBool>,
+    /// 自動ループ中に追加された指示。
+    pub loop_extra: Arc<Mutex<Vec<String>>>,
 }
 
 impl AppState {
@@ -95,6 +117,10 @@ impl AppState {
             chat: Mutex::new(Vec::new()),
             changed: Mutex::new(Vec::new()),
             busy: AtomicBool::new(false),
+            recorder: Mutex::new(None),
+            pending: Mutex::new(None),
+            loop_stop: Arc::new(AtomicBool::new(false)),
+            loop_extra: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -139,6 +165,12 @@ pub struct CycleReport {
     pub undo_depth: usize,
     /// Undo で戻せなかった値 (Undo のときだけ使う)。
     pub not_restored: Vec<RestoreTarget>,
+    /// AI が「目標に届いた。これ以上変えなくてよい」と判断したか。
+    pub goal_reached: bool,
+    /// 自動操作がガードレール (最前面・マウスの介入など) で止まったか。
+    pub interrupted: bool,
+    /// 送った録音が使われずに残っているか (手動モードで、何も変えずに失敗したとき)。
+    pub recording_kept: bool,
 }
 
 impl CycleReport {
@@ -151,8 +183,44 @@ impl CycleReport {
             rounds: 0,
             undo_depth: 0,
             not_restored: vec![],
+            goal_reached: false,
+            interrupted: false,
+            recording_kept: false,
         }
     }
+}
+
+/// 録り終えた録音の情報 (画面に出す)。
+#[derive(Debug, Clone, Serialize)]
+pub struct RecordingInfo {
+    pub seconds: f32,
+    pub peak_dbfs: f32,
+}
+
+impl From<&Prepared> for RecordingInfo {
+    fn from(p: &Prepared) -> Self {
+        Self {
+            seconds: p.seconds,
+            peak_dbfs: p.peak_dbfs,
+        }
+    }
+}
+
+/// 自動ループが終わったときの結果。
+#[derive(Debug, Clone, Serialize)]
+pub struct LoopSummary {
+    pub iterations: usize,
+    /// 止まった理由。
+    pub reason: String,
+    pub undo_depth: usize,
+}
+
+/// 自動ループの 1 回分の結果 (画面に送るイベント)。
+#[derive(Debug, Clone, Serialize)]
+pub struct LoopIteration {
+    pub iteration: usize,
+    pub max: usize,
+    pub report: CycleReport,
 }
 
 /// サイクルが外の世界に対して行うこと。
@@ -166,6 +234,12 @@ pub trait Engine {
         actions: Vec<AiAction>,
         window: TargetWindow,
     ) -> Result<Outcome, String>;
+    /// 自動ループ用に録音する。
+    async fn record(&mut self) -> Result<Prepared, String>;
+    /// 自動ループの 1 回分の結果を画面に伝える。
+    fn iteration(&mut self, report: LoopIteration);
+    /// 変えた値が音に反映されるのを待つ。
+    async fn settle(&mut self);
 }
 
 #[derive(Clone, Serialize)]
@@ -192,10 +266,13 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("内部エラー: {e}"))?
 }
 
-/// 本物: xcap で撮り、AI API を呼び、enigo で操作する。
+/// 本物: cpal で録り、xcap で撮り、AI API を呼び、enigo で操作する。
 struct TauriEngine {
     app: AppHandle,
     settings: ResolvedSettings,
+    /// 自動ループで録音するデバイスと秒数。
+    device_id: Option<String>,
+    seconds: u32,
 }
 
 impl Engine for TauriEngine {
@@ -230,6 +307,21 @@ impl Engine for TauriEngine {
         })
         .await
     }
+
+    async fn record(&mut self) -> Result<Prepared, String> {
+        let device_id = self.device_id.clone();
+        let seconds = self.seconds;
+        blocking(move || sound::prepare_recording(&audio::record(device_id.as_deref(), seconds)?))
+            .await
+    }
+
+    fn iteration(&mut self, report: LoopIteration) {
+        let _ = self.app.emit("loop_iteration", report);
+    }
+
+    async fn settle(&mut self) {
+        tokio::time::sleep(LOOP_SETTLE).await;
+    }
 }
 
 /// 処理を始める前に権限を確かめる。弾き終わってから失敗させないため、録音の前に見る。
@@ -263,6 +355,8 @@ struct CycleInput<'a> {
     changed: &'a [RestoreTarget],
     reference: Option<&'a [u8]>,
     recording: Option<&'a [u8]>,
+    /// 立っていたら、AI の提案を実行する前に止める。
+    stop: Option<&'a AtomicBool>,
 }
 
 /// 撮影 → AI → 検証 → 実行を、ブロック選択が続く限り繰り返す。
@@ -308,9 +402,13 @@ async fn run_rounds<E: Engine>(
                 .push(resp.explanation.trim().to_string());
         }
         ai::validate(&resp, purpose, round == MAX_ROUNDS)?;
+        report.goal_reached = resp.goal_reached;
 
         if resp.actions.is_empty() {
             return Ok(());
+        }
+        if input.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+            return Err(STOPPED_BEFORE_EXECUTE.to_string());
         }
         engine.progress(
             "operate",
@@ -327,6 +425,7 @@ async fn run_rounds<E: Engine>(
         }
         done_in_cycle.extend(outcome.done);
         if let Some(e) = outcome.error {
+            report.interrupted = true;
             return Err(e);
         }
 
@@ -415,15 +514,24 @@ fn summarize(changes: &[DoneAction]) -> String {
         .join("\n")
 }
 
-/// 録音済みの音を使って調整する。途中で止まっても、実行した分は Undo できるように残す。
+/// 調整 1 回分の入力。
+pub struct AdjustInput<'a> {
+    pub instruction: &'a str,
+    pub recording: Option<&'a Prepared>,
+    /// 会話の履歴に残すユーザーの発言。None なら指示をそのまま残す。
+    pub history_label: Option<&'a str>,
+    /// 立っていたら、AI の提案を実行する前に止める。
+    pub stop: Option<&'a AtomicBool>,
+}
+
+/// 指示と録音 (あれば) を使って調整する。途中で止まっても、実行した分は Undo できるように残す。
 pub async fn adjust<E: Engine>(
     engine: &mut E,
     state: &AppState,
     model: &str,
-    instruction: &str,
-    recording_wav: &[u8],
-    recording_peak_dbfs: f32,
+    req: &AdjustInput<'_>,
 ) -> Result<CycleReport, String> {
+    let instruction = req.instruction;
     let reference = state
         .reference
         .lock()
@@ -433,13 +541,14 @@ pub async fn adjust<E: Engine>(
     let history = state.chat.lock().map_err(|e| e.to_string())?.clone();
     let changed = state.changed.lock().map_err(|e| e.to_string())?.clone();
 
-    let mut report = CycleReport::empty(Some(recording_peak_dbfs));
+    let mut report = CycleReport::empty(req.recording.map(|r| r.peak_dbfs));
     let input = CycleInput {
         purpose: Purpose::Adjust { instruction },
         history: &history,
         changed: &changed,
         reference: reference.as_deref(),
-        recording: Some(recording_wav),
+        recording: req.recording.map(|r| r.wav.as_slice()),
+        stop: req.stop,
     };
     let result = run_rounds(engine, model, &input, &mut report, |_| {}).await;
     report.error = result.err();
@@ -460,10 +569,10 @@ pub async fn adjust<E: Engine>(
         let mut chat = state.chat.lock().map_err(|e| e.to_string())?;
         chat.push(ChatTurn {
             role: "user".into(),
-            text: if instruction.trim().is_empty() {
-                "(指示なしで調整を依頼)".into()
-            } else {
-                instruction.to_string()
+            text: match req.history_label {
+                Some(label) => label.to_string(),
+                None if instruction.trim().is_empty() => "(指示なしで調整を依頼)".into(),
+                None => instruction.to_string(),
             },
         });
         let mut text = report.explanations.join("\n");
@@ -505,6 +614,7 @@ pub async fn revert<E: Engine>(
         changed: &[],
         reference: None,
         recording: None,
+        stop: None,
     };
     let result = run_rounds(engine, model, &input, &mut report, |d| {
         mark_restored(&mut remaining, d)
@@ -541,54 +651,258 @@ pub async fn revert<E: Engine>(
     Ok(report)
 }
 
-pub async fn run_cycle(
+/// 手動モード: 指示と録音 (あれば) を送る。録音は、値を変えたか最後まで終わったら使い切る。
+/// 何も変えずに失敗したとき (AI の混雑など) は、送り直せるように残す。
+pub async fn send<E: Engine>(
+    engine: &mut E,
+    state: &AppState,
+    model: &str,
+    instruction: &str,
+) -> Result<CycleReport, String> {
+    let recording = state.pending.lock().map_err(|e| e.to_string())?.clone();
+    if instruction.trim().is_empty() && recording.is_none() {
+        return Err("指示を書くか、録音してから送ってください".to_string());
+    }
+    let mut report = adjust(
+        engine,
+        state,
+        model,
+        &AdjustInput {
+            instruction,
+            recording: recording.as_ref(),
+            history_label: None,
+            stop: None,
+        },
+    )
+    .await?;
+    if recording.is_some() {
+        if report.error.is_none() || !report.changes.is_empty() {
+            *state.pending.lock().map_err(|e| e.to_string())? = None;
+        } else {
+            report.recording_kept = true;
+        }
+    }
+    Ok(report)
+}
+
+/// 自動ループの指示。途中で追加された指示を後ろに足す。
+pub fn loop_instruction(base: &str, extras: &[String]) -> String {
+    let mut text = base.trim().to_string();
+    if !extras.is_empty() {
+        text.push_str("\n途中で追加された指示 (後のものほど優先する):");
+        for e in extras {
+            text.push_str(&format!("\n- {e}"));
+        }
+    }
+    text
+}
+
+/// 自動ループ中に指示を足す。次の回から使う。
+pub fn add_loop_instruction(extras: &mut Vec<String>, text: &str) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("空の指示は追加できません".to_string());
+    }
+    extras.push(text.to_string());
+    let excess = extras.len().saturating_sub(MAX_LOOP_EXTRA_INSTRUCTIONS);
+    extras.drain(..excess);
+    Ok(())
+}
+
+pub fn check_iterations(max_iterations: usize) -> Result<(), String> {
+    if (1..=MAX_LOOP_ITERATIONS).contains(&max_iterations) {
+        Ok(())
+    } else {
+        Err(format!(
+            "ループの回数は 1〜{MAX_LOOP_ITERATIONS} 回にしてください: {max_iterations}"
+        ))
+    }
+}
+
+/// 自動ループ: 録音 → 調整 を繰り返す。次のどれかで止まる。
+/// - 停止の合図 (`state.loop_stop`)
+/// - 回数の上限
+/// - AI が値を変えなかった (目標に届いた / 自動で変えられる値が無い)
+/// - 自動操作がガードレールで止まった (ユーザーがマウスに触ったなど)
+/// - `MAX_CONSECUTIVE_FAILURES` 回続けて失敗した (無音・AI の混雑など)
+pub async fn auto_loop<E: Engine>(
+    engine: &mut E,
+    state: &AppState,
+    model: &str,
+    instruction: &str,
+    max_iterations: usize,
+) -> Result<LoopSummary, String> {
+    check_iterations(max_iterations)?;
+    let stop = state.loop_stop.clone();
+    stop.store(false, Ordering::SeqCst);
+    state.loop_extra.lock().map_err(|e| e.to_string())?.clear();
+    let stopped = || stop.load(Ordering::SeqCst);
+    const STOPPED: &str = "停止ボタンで止めた";
+
+    let mut iterations = 0;
+    let mut failures = 0;
+    let reason = loop {
+        if iterations >= max_iterations {
+            break format!("上限の {max_iterations} 回に達した");
+        }
+        if stopped() {
+            break STOPPED.to_string();
+        }
+        let n = iterations + 1;
+        engine.progress(
+            "record",
+            format!("ループ {n}/{max_iterations}: 録音中… 音を出し続けてください"),
+        );
+        let recorded = engine.record().await;
+        if stopped() {
+            break STOPPED.to_string();
+        }
+        let report = match recorded {
+            Ok(recording) => {
+                let extras = state.loop_extra.lock().map_err(|e| e.to_string())?.clone();
+                let label = format!("(自動ループ {n} 回目)");
+                adjust(
+                    engine,
+                    state,
+                    model,
+                    &AdjustInput {
+                        instruction: &loop_instruction(instruction, &extras),
+                        recording: Some(&recording),
+                        history_label: Some(&label),
+                        stop: Some(&stop),
+                    },
+                )
+                .await?
+            }
+            Err(e) => CycleReport {
+                error: Some(e),
+                undo_depth: state.undo_depth(),
+                ..CycleReport::empty(None)
+            },
+        };
+        iterations = n;
+        engine.iteration(LoopIteration {
+            iteration: n,
+            max: max_iterations,
+            report: report.clone(),
+        });
+
+        if let Some(e) = &report.error {
+            if stopped() {
+                break STOPPED.to_string();
+            }
+            if report.interrupted {
+                break format!("自動操作が止まったので、ループも止めた: {e}");
+            }
+            failures += 1;
+            if failures >= MAX_CONSECUTIVE_FAILURES {
+                break format!("{failures} 回続けて失敗したので止めた: {e}");
+            }
+            continue;
+        }
+        failures = 0;
+        if report.changes.is_empty() {
+            break if report.goal_reached {
+                "AI が目標に届いたと判断した".to_string()
+            } else {
+                "AI が自動で変えられる値を返さなかった".to_string()
+            };
+        }
+        engine.settle().await;
+    };
+    Ok(LoopSummary {
+        iterations,
+        reason,
+        undo_depth: state.undo_depth(),
+    })
+}
+
+/// 手動モードの録音を始める。`MAX_RECORD_SECONDS` 秒で自動的に止まる。
+pub fn start_recording(state: &AppState, device_id: Option<String>) -> Result<(), String> {
+    if state.busy.load(Ordering::SeqCst) {
+        return Err("処理中は録音できません".to_string());
+    }
+    if macos::permission_status().microphone == "denied" {
+        return Err(
+            "マイクの権限がありません。右上の権限表示からシステム設定で許可してください"
+                .to_string(),
+        );
+    }
+    let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
+    if recorder.is_some() {
+        return Err("すでに録音中です".to_string());
+    }
+    *state.pending.lock().map_err(|e| e.to_string())? = None;
+    *recorder = Some(audio::Recorder::start(
+        device_id.as_deref(),
+        Duration::from_secs(MAX_RECORD_SECONDS as u64),
+    )?);
+    Ok(())
+}
+
+/// 手動モードの録音を止め、前後の無音を削って送る準備をする。
+pub async fn stop_recording(state: &AppState) -> Result<RecordingInfo, String> {
+    let recorder = state
+        .recorder
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .ok_or_else(|| "録音していません".to_string())?;
+    let prepared = blocking(move || sound::prepare_recording(&recorder.stop()?)).await?;
+    let info = RecordingInfo::from(&prepared);
+    *state.pending.lock().map_err(|e| e.to_string())? = Some(prepared);
+    Ok(info)
+}
+
+pub async fn send_message(
+    app: AppHandle,
+    state: &AppState,
+    instruction: String,
+) -> Result<CycleReport, String> {
+    let _busy = BusyGuard::acquire(&state.busy)?;
+    if state.recorder.lock().map_err(|e| e.to_string())?.is_some() {
+        return Err("録音中です。録音を止めてから送ってください".to_string());
+    }
+    let settings = state.resolved_settings()?;
+    ensure_permissions(false)?;
+    let model = settings.model.clone();
+    let mut engine = TauriEngine {
+        app: app.clone(),
+        settings,
+        device_id: None,
+        seconds: 0,
+    };
+    let report = send(&mut engine, state, &model, &instruction).await;
+    emit_progress(&app, "done", "完了".into());
+    report
+}
+
+pub async fn run_loop(
     app: AppHandle,
     state: &AppState,
     instruction: String,
     device_id: Option<String>,
     seconds: u32,
-) -> Result<CycleReport, String> {
+    max_iterations: usize,
+) -> Result<LoopSummary, String> {
     let _busy = BusyGuard::acquire(&state.busy)?;
+    sound::check_duration(seconds)?;
+    check_iterations(max_iterations)?;
     let settings = state.resolved_settings()?;
     ensure_permissions(true)?;
     // 録音の前に HX Edit があるかを確かめる (弾き終わってから失敗させない)
     let target_app = settings.target_app.clone();
     blocking(move || capture::find_target_window(&target_app)).await?;
-
-    emit_progress(
-        &app,
-        "record",
-        format!("{seconds} 秒録音中… ギターを弾いてください"),
-    );
-    let recording = blocking(move || {
-        crate::sound::prepare_recording(&crate::audio::record(device_id.as_deref(), seconds)?)
-    })
-    .await?;
-    emit_progress(
-        &app,
-        "record",
-        format!(
-            "録音完了 ({:.1} 秒, ピーク {:.1} dBFS)",
-            recording.seconds, recording.peak_dbfs
-        ),
-    );
-
     let model = settings.model.clone();
     let mut engine = TauriEngine {
         app: app.clone(),
         settings,
+        device_id,
+        seconds,
     };
-    let report = adjust(
-        &mut engine,
-        state,
-        &model,
-        &instruction,
-        &recording.wav,
-        recording.peak_dbfs,
-    )
-    .await;
+    let summary = auto_loop(&mut engine, state, &model, &instruction, max_iterations).await;
     emit_progress(&app, "done", "完了".into());
-    report
+    summary
 }
 
 pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, String> {
@@ -599,6 +913,8 @@ pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, 
     let mut engine = TauriEngine {
         app: app.clone(),
         settings,
+        device_id: None,
+        seconds: 0,
     };
     let report = revert(&mut engine, state, &model).await;
     emit_progress(&app, "done", "完了".into());
@@ -746,5 +1062,45 @@ mod tests {
         assert_eq!(log.len(), MAX_CHANGED_PARAMETERS);
         assert_eq!(log[0].parameter, "P2");
         assert_eq!(MAX_CHANGED_PARAMETERS, 24);
+    }
+
+    #[test]
+    fn loop_instruction_appends_extras_in_order() {
+        assert_eq!(loop_instruction(" 太く ", &[]), "太く");
+        let text = loop_instruction("太く", &["もっと".into(), "やっぱり控えめに".into()]);
+        assert_eq!(
+            text,
+            "太く\n途中で追加された指示 (後のものほど優先する):\n- もっと\n- やっぱり控えめに"
+        );
+    }
+
+    #[test]
+    fn add_loop_instruction_rejects_empty_and_forgets_oldest() {
+        let mut extras = vec![];
+        assert!(add_loop_instruction(&mut extras, "  ").is_err());
+        for i in 0..MAX_LOOP_EXTRA_INSTRUCTIONS + 1 {
+            add_loop_instruction(&mut extras, &format!(" 指示{i} ")).unwrap();
+        }
+        assert_eq!(extras.len(), MAX_LOOP_EXTRA_INSTRUCTIONS);
+        assert_eq!(extras[0], "指示1");
+        assert_eq!(
+            extras.last().unwrap(),
+            &format!("指示{MAX_LOOP_EXTRA_INSTRUCTIONS}")
+        );
+    }
+
+    #[test]
+    fn iteration_count_range() {
+        assert!(check_iterations(0).is_err());
+        assert!(check_iterations(1).is_ok());
+        assert!(check_iterations(MAX_LOOP_ITERATIONS).is_ok());
+        assert!(check_iterations(MAX_LOOP_ITERATIONS + 1).is_err());
+    }
+
+    #[test]
+    fn loop_constants() {
+        assert_eq!(MAX_CONSECUTIVE_FAILURES, 3);
+        assert_eq!(LOOP_SETTLE, Duration::from_secs(1));
+        assert_eq!(MAX_LOOP_EXTRA_INSTRUCTIONS, 5);
     }
 }

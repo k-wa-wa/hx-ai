@@ -1,9 +1,10 @@
-//! サイクルと Undo の流れのテスト。
+//! サイクル・Undo・手動送信・自動ループの流れのテスト。
 //!
-//! AI の応答は台本で与え、自動操作は本物の `automation::execute` を偽のデスクトップに
+//! AI の応答と録音は台本で与え、自動操作は本物の `automation::execute` を偽のデスクトップに
 //! 対して走らせる。
 
 use std::collections::VecDeque;
+use std::sync::atomic::Ordering;
 
 use base64::Engine as _;
 use serde_json::Value;
@@ -13,7 +14,11 @@ use crate::automation::fake::{Ev, FakeDesktop, HX_PID, HX_WINDOW, hx_rect};
 use crate::automation::{self, Outcome};
 use crate::capture::{Screenshot, TargetWindow};
 use crate::config::StoredSettings;
-use crate::workflow::{self, AppState, Engine, MAX_ROUNDS, MAX_UNDO_GROUPS};
+use crate::sound::Prepared;
+use crate::workflow::{
+    self, AdjustInput, AppState, Engine, LoopIteration, MAX_CONSECUTIVE_FAILURES, MAX_ROUNDS,
+    MAX_UNDO_GROUPS, STOPPED_BEFORE_EXECUTE,
+};
 
 struct FakeEngine {
     desktop: FakeDesktop,
@@ -21,6 +26,23 @@ struct FakeEngine {
     /// AI に送ったリクエスト本文。
     requests: Vec<Value>,
     captures: usize,
+    /// 自動ループの録音の台本。尽きたら `recording()` を返す。
+    recordings: VecDeque<Result<Prepared, String>>,
+    records: usize,
+    /// n 回目 (1 始まり) の録音の直後に呼ぶ。
+    on_record: Option<Box<dyn FnMut(usize)>>,
+    /// n 回目 (1 始まり) の AI への問い合わせの直後に呼ぶ。
+    on_ask: Option<Box<dyn FnMut(usize)>>,
+    iterations: Vec<LoopIteration>,
+    settles: usize,
+}
+
+fn recording() -> Prepared {
+    Prepared {
+        wav: b"WAV".to_vec(),
+        peak_dbfs: -12.0,
+        seconds: 3.0,
+    }
 }
 
 impl FakeEngine {
@@ -34,6 +56,12 @@ impl FakeEngine {
             answers: answers.into(),
             requests: vec![],
             captures: 0,
+            recordings: VecDeque::new(),
+            records: 0,
+            on_record: None,
+            on_ask: None,
+            iterations: vec![],
+            settles: 0,
         }
     }
 
@@ -71,6 +99,10 @@ impl Engine for FakeEngine {
 
     async fn ask(&mut self, body: &Value) -> Result<AiResponse, String> {
         self.requests.push(body.clone());
+        let n = self.requests.len();
+        if let Some(f) = self.on_ask.as_mut() {
+            f(n);
+        }
         self.answers
             .pop_front()
             .expect("台本に無い AI への問い合わせ")
@@ -82,6 +114,24 @@ impl Engine for FakeEngine {
         window: TargetWindow,
     ) -> Result<Outcome, String> {
         Ok(automation::execute(&mut self.desktop, &actions, &window))
+    }
+
+    async fn record(&mut self) -> Result<Prepared, String> {
+        self.records += 1;
+        if let Some(f) = self.on_record.as_mut() {
+            f(self.records);
+        }
+        self.recordings
+            .pop_front()
+            .unwrap_or_else(|| Ok(recording()))
+    }
+
+    fn iteration(&mut self, report: LoopIteration) {
+        self.iterations.push(report);
+    }
+
+    async fn settle(&mut self) {
+        self.settles += 1;
     }
 }
 
@@ -124,6 +174,17 @@ fn answer(actions: Vec<AiAction>) -> Result<AiResponse, String> {
         explanation: "説明".into(),
         actions,
         needs_another_round,
+        goal_reached: false,
+    })
+}
+
+/// 「目標に届いた」とだけ返す応答。
+fn reached() -> Result<AiResponse, String> {
+    Ok(AiResponse {
+        explanation: "目標に届いた".into(),
+        actions: vec![],
+        needs_another_round: false,
+        goal_reached: true,
     })
 }
 
@@ -135,10 +196,28 @@ fn target(param: &str, value: &str) -> RestoreTarget {
     }
 }
 
+async fn adjust_with(
+    engine: &mut FakeEngine,
+    state: &AppState,
+    instruction: &str,
+) -> workflow::CycleReport {
+    workflow::adjust(
+        engine,
+        state,
+        "m",
+        &AdjustInput {
+            instruction,
+            recording: Some(&recording()),
+            history_label: None,
+            stop: None,
+        },
+    )
+    .await
+    .unwrap()
+}
+
 async fn adjust(engine: &mut FakeEngine, state: &AppState) -> workflow::CycleReport {
-    workflow::adjust(engine, state, "m", "太く", b"WAV", -12.0)
-        .await
-        .unwrap()
+    adjust_with(engine, state, "太く").await
 }
 
 fn undo_stack(state: &AppState) -> Vec<Vec<RestoreTarget>> {
@@ -279,12 +358,8 @@ async fn no_actions_means_no_undo_entry() {
 async fn previous_turns_are_sent_as_history() {
     let s = state();
     let mut e = FakeEngine::new(vec![answer(vec![]), answer(vec![])]);
-    workflow::adjust(&mut e, &s, "m", "一回目の指示", b"WAV", -12.0)
-        .await
-        .unwrap();
-    workflow::adjust(&mut e, &s, "m", "二回目", b"WAV", -12.0)
-        .await
-        .unwrap();
+    adjust_with(&mut e, &s, "一回目の指示").await;
+    adjust_with(&mut e, &s, "二回目").await;
     let second = e.requests[1].to_string();
     assert!(second.contains("一回目の指示"));
     let first = e.requests[0].to_string();
@@ -447,4 +522,308 @@ async fn reverted_values_update_changed_parameters() {
     let mut e = FakeEngine::new(vec![answer(vec![set("Treble", 500.0, "6.5", "7.2")])]);
     workflow::revert(&mut e, &s, "m").await.unwrap();
     assert_eq!(*s.changed.lock().unwrap(), vec![target("Treble", "7.2")]);
+}
+
+// ---- 手動モード: 録音を添えて送る ----
+
+fn pending(state: &AppState) -> Option<Prepared> {
+    state.pending.lock().unwrap().clone()
+}
+
+async fn send(
+    engine: &mut FakeEngine,
+    state: &AppState,
+    instruction: &str,
+) -> Result<workflow::CycleReport, String> {
+    workflow::send(engine, state, "m", instruction).await
+}
+
+/// n 回目のリクエストで送った音声の数。
+fn audio_count(e: &FakeEngine, n: usize) -> usize {
+    e.requests[n].to_string().matches("input_audio\":{").count()
+}
+
+#[tokio::test]
+async fn send_needs_instruction_or_recording() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![]);
+    let err = send(&mut e, &s, "  ").await.unwrap_err();
+    assert!(err.contains("指示を書くか、録音してから"), "{err}");
+    assert!(e.requests.is_empty());
+}
+
+#[tokio::test]
+async fn send_without_recording_asks_with_screen_only() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![answer(vec![])]);
+    let r = send(&mut e, &s, "ディレイを足して").await.unwrap();
+    assert_eq!(r.recording_peak_dbfs, None);
+    assert_eq!(audio_count(&e, 0), 0);
+    assert!(e.request_text(0).contains("音声は無い"));
+}
+
+#[tokio::test]
+async fn send_attaches_the_recording_and_uses_it_up() {
+    let s = state();
+    *s.pending.lock().unwrap() = Some(recording());
+    let mut e = FakeEngine::new(vec![answer(vec![set("Bass", 300.0, "5.0", "6.0")])]);
+    let r = send(&mut e, &s, "").await.unwrap();
+    assert_eq!(audio_count(&e, 0), 1);
+    assert_eq!(r.recording_peak_dbfs, Some(-12.0));
+    assert!(!r.recording_kept);
+    assert_eq!(pending(&s), None, "送ったら消す");
+}
+
+#[tokio::test]
+async fn send_keeps_the_recording_when_nothing_changed_and_it_failed() {
+    let s = state();
+    *s.pending.lock().unwrap() = Some(recording());
+    let mut e = FakeEngine::new(vec![Err("HTTP 503".into())]);
+    let r = send(&mut e, &s, "太く").await.unwrap();
+    assert!(r.recording_kept);
+    assert_eq!(pending(&s), Some(recording()), "送り直せるように残す");
+}
+
+#[tokio::test]
+async fn send_uses_up_the_recording_once_values_changed_even_if_it_failed_later() {
+    let s = state();
+    *s.pending.lock().unwrap() = Some(recording());
+    let mut first_enter = true;
+    let desktop = FakeDesktop::new().on_event(move |ev, w| {
+        if *ev == Ev::Enter && first_enter {
+            first_enter = false;
+            w.frontmost = Some(42);
+        }
+    });
+    let mut e = FakeEngine::with_desktop(
+        desktop,
+        vec![answer(vec![
+            set("Bass", 300.0, "5.0", "6.0"),
+            set("Treble", 500.0, "7.2", "6.5"),
+        ])],
+    );
+    let r = send(&mut e, &s, "太く").await.unwrap();
+    assert!(r.error.is_some());
+    assert!(r.interrupted, "ガードレールで止まった");
+    assert!(!r.recording_kept, "音が変わったので古い録音は使わない");
+    assert_eq!(pending(&s), None);
+}
+
+// ---- 自動ループ ----
+
+async fn run_loop(e: &mut FakeEngine, s: &AppState, max: usize) -> workflow::LoopSummary {
+    workflow::auto_loop(e, s, "m", "リファレンスに近づけて", max)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn loop_repeats_until_ai_says_the_goal_is_reached() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![
+        answer(vec![set("Bass", 300.0, "5.0", "6.0")]),
+        answer(vec![set("Bass", 300.0, "6.0", "6.5")]),
+        reached(),
+    ]);
+    let r = run_loop(&mut e, &s, 10).await;
+
+    assert_eq!(r.iterations, 3);
+    assert!(r.reason.contains("目標に届いた"), "{}", r.reason);
+    assert_eq!(e.records, 3);
+    assert_eq!(e.settles, 2, "値を変えた後は反映を待ってから録る");
+    assert_eq!(r.undo_depth, 2, "1 回ごとに Undo できる");
+    let numbers: Vec<(usize, usize)> = e.iterations.iter().map(|i| (i.iteration, i.max)).collect();
+    assert_eq!(numbers, vec![(1, 10), (2, 10), (3, 10)]);
+    assert!(e.iterations[2].report.goal_reached);
+    // 毎回の録音を送り、指示は毎回のリクエストに入れる
+    for n in 0..3 {
+        assert_eq!(audio_count(&e, n), 1);
+        assert!(e.request_text(n).contains("リファレンスに近づけて"));
+    }
+    // 会話の履歴には長い指示を繰り返さず、何回目かだけを残す
+    let chat = s.chat.lock().unwrap().clone();
+    assert_eq!(chat[0].text, "(自動ループ 1 回目)");
+    assert_eq!(chat[4].text, "(自動ループ 3 回目)");
+}
+
+#[tokio::test]
+async fn loop_stops_at_the_iteration_limit() {
+    let s = state();
+    let answers = (0..3)
+        .map(|i| {
+            answer(vec![set(
+                "Bass",
+                300.0,
+                &format!("{i}"),
+                &format!("{}", i + 1),
+            )])
+        })
+        .collect();
+    let mut e = FakeEngine::new(answers);
+    let r = run_loop(&mut e, &s, 3).await;
+    assert_eq!(r.iterations, 3);
+    assert!(r.reason.contains("上限の 3 回"), "{}", r.reason);
+    assert_eq!(e.records, 3);
+}
+
+#[tokio::test]
+async fn loop_stops_when_ai_returns_nothing_to_change() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![answer(vec![])]);
+    let r = run_loop(&mut e, &s, 10).await;
+    assert_eq!(r.iterations, 1);
+    assert!(
+        r.reason.contains("自動で変えられる値を返さなかった"),
+        "{}",
+        r.reason
+    );
+}
+
+#[tokio::test]
+async fn loop_continues_when_goal_is_reached_but_values_were_still_changed() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![
+        Ok(AiResponse {
+            explanation: "ほぼ届いた。最後に少しだけ".into(),
+            actions: vec![set("Bass", 300.0, "5.0", "5.5")],
+            needs_another_round: false,
+            goal_reached: true,
+        }),
+        reached(),
+    ]);
+    let r = run_loop(&mut e, &s, 10).await;
+    assert_eq!(r.iterations, 2, "変えた後の音を聴いて確かめる");
+}
+
+#[tokio::test]
+async fn loop_stops_when_a_guard_interrupts_the_operation() {
+    let s = state();
+    let desktop = FakeDesktop::new().on_event(|ev, w| {
+        if *ev == Ev::Enter {
+            w.frontmost = Some(42);
+        }
+    });
+    let mut e = FakeEngine::with_desktop(
+        desktop,
+        vec![answer(vec![
+            set("Bass", 300.0, "5.0", "6.0"),
+            set("Treble", 500.0, "7.2", "6.5"),
+        ])],
+    );
+    let r = run_loop(&mut e, &s, 10).await;
+    assert_eq!(r.iterations, 1);
+    assert!(r.reason.contains("自動操作が止まった"), "{}", r.reason);
+    assert_eq!(r.undo_depth, 1, "止まる前の変更は戻せる");
+}
+
+#[tokio::test]
+async fn loop_tolerates_failures_but_stops_after_too_many_in_a_row() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![
+        Err("HTTP 503".into()),
+        answer(vec![set("Bass", 300.0, "5.0", "6.0")]),
+        Err("HTTP 503".into()),
+        // 録音の失敗 (下で台本に入れる) もここで 1 回と数える
+        Err("HTTP 503".into()),
+    ]);
+    e.recordings = vec![
+        Ok(recording()),
+        Ok(recording()),
+        Ok(recording()),
+        Err("録音がほぼ無音でした".into()),
+        Ok(recording()),
+    ]
+    .into();
+    let r = run_loop(&mut e, &s, 10).await;
+    assert_eq!(r.iterations, 5);
+    assert!(
+        r.reason
+            .contains(&format!("{MAX_CONSECUTIVE_FAILURES} 回続けて失敗")),
+        "{}",
+        r.reason
+    );
+    assert_eq!(e.requests.len(), 4, "録音に失敗した回は AI に聞かない");
+    assert_eq!(
+        e.iterations[3].report.error.as_deref(),
+        Some("録音がほぼ無音でした")
+    );
+}
+
+#[tokio::test]
+async fn stop_signal_ends_the_loop_before_the_next_recording_is_sent() {
+    let s = state();
+    let stop = s.loop_stop.clone();
+    let mut e = FakeEngine::new(vec![answer(vec![set("Bass", 300.0, "5.0", "6.0")])]);
+    e.on_record = Some(Box::new(move |n| {
+        if n == 2 {
+            stop.store(true, Ordering::SeqCst);
+        }
+    }));
+    let r = run_loop(&mut e, &s, 10).await;
+    assert_eq!(r.iterations, 1);
+    assert!(r.reason.contains("停止ボタン"), "{}", r.reason);
+    assert_eq!(e.requests.len(), 1, "止めた後の録音は送らない");
+}
+
+#[tokio::test]
+async fn stop_signal_during_ai_request_skips_executing_its_answer() {
+    let s = state();
+    let stop = s.loop_stop.clone();
+    let mut e = FakeEngine::new(vec![answer(vec![set("Bass", 300.0, "5.0", "6.0")])]);
+    e.on_ask = Some(Box::new(move |_| stop.store(true, Ordering::SeqCst)));
+    let r = run_loop(&mut e, &s, 10).await;
+    assert!(r.reason.contains("停止ボタン"), "{}", r.reason);
+    assert!(e.desktop.events.is_empty(), "止めた後は操作しない");
+    assert_eq!(
+        e.iterations[0].report.error.as_deref(),
+        Some(STOPPED_BEFORE_EXECUTE)
+    );
+    assert_eq!(r.undo_depth, 0);
+}
+
+#[tokio::test]
+async fn instructions_added_during_the_loop_are_used_from_the_next_iteration() {
+    let s = state();
+    let extra = s.loop_extra.clone();
+    let mut e = FakeEngine::new(vec![
+        answer(vec![set("Bass", 300.0, "5.0", "6.0")]),
+        reached(),
+    ]);
+    e.on_ask = Some(Box::new(move |n| {
+        if n == 1 {
+            workflow::add_loop_instruction(&mut extra.lock().unwrap(), "もう少し歪ませて").unwrap();
+        }
+    }));
+    run_loop(&mut e, &s, 10).await;
+    assert!(!e.request_text(0).contains("もう少し歪ませて"));
+    let second = e.request_text(1);
+    assert!(second.contains("リファレンスに近づけて"), "{second}");
+    assert!(second.contains("- もう少し歪ませて"), "{second}");
+}
+
+#[tokio::test]
+async fn loop_clears_the_previous_stop_signal_and_extra_instructions() {
+    let s = state();
+    s.loop_stop.store(true, Ordering::SeqCst);
+    s.loop_extra.lock().unwrap().push("前のループの指示".into());
+    let mut e = FakeEngine::new(vec![reached()]);
+    let r = run_loop(&mut e, &s, 10).await;
+    assert_eq!(
+        r.iterations, 1,
+        "前に押した停止で始まらない、ということがない"
+    );
+    assert!(!e.request_text(0).contains("前のループの指示"));
+}
+
+#[tokio::test]
+async fn loop_rejects_invalid_iteration_counts() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![]);
+    assert!(workflow::auto_loop(&mut e, &s, "m", "x", 0).await.is_err());
+    assert!(
+        workflow::auto_loop(&mut e, &s, "m", "x", workflow::MAX_LOOP_ITERATIONS + 1)
+            .await
+            .is_err()
+    );
+    assert_eq!(e.records, 0);
 }

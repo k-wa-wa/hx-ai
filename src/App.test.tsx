@@ -1,11 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { emit } from "@tauri-apps/api/event";
-import App from "./App";
+import App, { MAX_RECORD_SECONDS } from "./App";
 import { GRANTED, report, SETTINGS, setupBackend } from "./test/backend";
 
-const RUN = /聴いて調整する/;
 
 async function renderApp() {
   const user = userEvent.setup();
@@ -65,10 +64,21 @@ describe("起動時", () => {
   });
 });
 
-describe("聴いて調整する", () => {
-  it("指示・デバイス・録音秒数を渡し、結果の変更を表示する", async () => {
+const SEND = "送信";
+const RECORDED = { seconds: 4.2, peak_dbfs: -12.3 };
+
+async function record(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "● 録音" }));
+  await user.click(await screen.findByRole("button", { name: /■ 停止/ }));
+  await screen.findByText(/🎙 録音 4.2 秒/);
+}
+
+describe("手動モード", () => {
+  it("録音して止めると添付として表示し、指示と一緒に送る", async () => {
     const b = setupBackend({
-      run_cycle: () =>
+      start_recording: () => null,
+      stop_recording: () => RECORDED,
+      send_message: () =>
         report({
           changes: [
             {
@@ -83,44 +93,132 @@ describe("聴いて調整する", () => {
         }),
     });
     const user = await renderApp();
-    await user.click(screen.getByRole("radio", { name: "3 秒" }));
+    await record(user);
+    expect(b.callsTo("start_recording")).toEqual([{ deviceId: "coreaudio:stomp" }]);
+    expect(screen.getByText("🎙 録音 4.2 秒 · ピーク -12.3 dBFS")).toBeInTheDocument();
+
     await user.type(screen.getByRole("textbox"), "ハイを削って");
-    await user.click(screen.getByRole("button", { name: RUN }));
+    await user.click(screen.getByRole("button", { name: SEND }));
 
     expect(await screen.findByText("高域を下げた")).toBeInTheDocument();
-    expect(b.callsTo("run_cycle")).toEqual([
-      { instruction: "ハイを削って", deviceId: "coreaudio:stomp", seconds: 3 },
-    ]);
+    expect(b.callsTo("send_message")).toEqual([{ instruction: "ハイを削って" }]);
     expect(screen.getByText("Amp / Treble")).toBeInTheDocument();
-    expect(screen.getByText("6.0")).toBeInTheDocument();
     expect(screen.getByText(/録音ピーク -12.3 dBFS/)).toBeInTheDocument();
     expect(screen.getByRole("textbox")).toHaveValue("");
+    expect(screen.queryByText(/🎙 録音 4.2 秒 · ピーク/)).not.toBeInTheDocument();
   });
 
-  it("⌘↩ でも実行する", async () => {
-    const b = setupBackend({ run_cycle: () => report() });
+  it("録音中は送れず、録音だけでも送れる", async () => {
+    const b = setupBackend({
+      start_recording: () => null,
+      stop_recording: () => RECORDED,
+      send_message: () => report(),
+    });
+    const user = await renderApp();
+    expect(screen.getByRole("button", { name: SEND })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "● 録音" }));
+    await user.type(screen.getByRole("textbox"), "太く");
+    expect(screen.getByRole("button", { name: SEND })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /■ 停止/ }));
+    await user.clear(screen.getByRole("textbox"));
+    await user.click(await screen.findByRole("button", { name: SEND }));
+    await waitFor(() => expect(b.callsTo("send_message")).toEqual([{ instruction: "" }]));
+  });
+
+  it("録音なしで指示だけを送れる", async () => {
+    const b = setupBackend({ send_message: () => report() });
+    const user = await renderApp();
+    await user.type(screen.getByRole("textbox"), "ディレイを足して");
+    await user.click(screen.getByRole("button", { name: SEND }));
+    await waitFor(() => expect(b.callsTo("send_message")).toHaveLength(1));
+    expect(b.callsTo("start_recording")).toEqual([]);
+  });
+
+  it("使われなかった録音は添付に残す", async () => {
+    setupBackend({
+      start_recording: () => null,
+      stop_recording: () => RECORDED,
+      send_message: () => report({ explanations: [], error: "HTTP 503", recording_kept: true }),
+    });
+    const user = await renderApp();
+    await record(user);
+    await user.click(screen.getByRole("button", { name: SEND }));
+    expect(await screen.findByText("HTTP 503")).toBeInTheDocument();
+    expect(screen.getByText(/🎙 録音 4.2 秒 · ピーク/)).toBeInTheDocument();
+  });
+
+  it("添付した録音を消せる", async () => {
+    const b = setupBackend({
+      start_recording: () => null,
+      stop_recording: () => RECORDED,
+      discard_recording: () => null,
+    });
+    const user = await renderApp();
+    await record(user);
+    await user.click(screen.getByRole("button", { name: "録音を消す" }));
+    await waitFor(() => expect(screen.queryByText(/🎙 録音 4.2 秒/)).not.toBeInTheDocument());
+    expect(b.callsTo("discard_recording")).toHaveLength(1);
+  });
+
+  it("録音を始められないときはエラーを出し、録音中にならない", async () => {
+    setupBackend({
+      start_recording: () => {
+        throw "マイクの権限がありません";
+      },
+    });
+    const user = await renderApp();
+    await user.click(screen.getByRole("button", { name: "● 録音" }));
+    expect(await screen.findByText("マイクの権限がありません")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "● 録音" })).toBeEnabled();
+  });
+
+  it(`録音は ${MAX_RECORD_SECONDS} 秒で自動的に止まる`, async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const b = setupBackend({ start_recording: () => null, stop_recording: () => RECORDED });
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      render(<App />);
+      await screen.findByRole("option", { name: /HX Stomp/ });
+      await user.click(screen.getByRole("button", { name: "● 録音" }));
+      await act(async () => {
+        vi.advanceTimersByTime((MAX_RECORD_SECONDS - 1) * 1000);
+      });
+      expect(b.callsTo("stop_recording")).toHaveLength(0);
+      await act(async () => {
+        vi.advanceTimersByTime(1500);
+      });
+      await waitFor(() => expect(b.callsTo("stop_recording")).toHaveLength(1));
+      expect(await screen.findByText(/🎙 録音 4.2 秒/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("⌘↩ で送る", async () => {
+    const b = setupBackend({ send_message: () => report() });
     const user = await renderApp();
     await user.type(screen.getByRole("textbox"), "太く{Meta>}{Enter}{/Meta}");
-    await waitFor(() => expect(b.callsTo("run_cycle")).toHaveLength(1));
-    expect(b.callsTo("run_cycle")[0]).toMatchObject({ instruction: "太く" });
+    await waitFor(() => expect(b.callsTo("send_message")).toEqual([{ instruction: "太く" }]));
   });
 
-  it("失敗したらエラーだけを出し、「変更はなかった」とは言わない", async () => {
+  it("失敗したらエラーだけを出し、指示を入力欄に戻して送り直せるようにする", async () => {
     setupBackend({
-      run_cycle: () => {
+      send_message: () => {
         throw "画面収録 の権限がありません";
       },
     });
     const user = await renderApp();
-    await user.click(screen.getByRole("button", { name: RUN }));
+    await user.type(screen.getByRole("textbox"), "太く");
+    await user.click(screen.getByRole("button", { name: SEND }));
     expect(await screen.findByText("画面収録 の権限がありません")).toBeInTheDocument();
     expect(screen.queryByText("変更はなかった。")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: RUN })).toBeEnabled();
+    expect(screen.getByRole("textbox")).toHaveValue("太く");
+    expect(screen.getByRole("button", { name: SEND })).toBeEnabled();
   });
 
   it("途中で止まったら、ここまでの変更を戻せると伝える", async () => {
     setupBackend({
-      run_cycle: () =>
+      send_message: () =>
         report({
           changes: [
             { kind: "set_value", block: "Amp", parameter: "Bass", previous_value: "5", value: "6" },
@@ -130,31 +228,159 @@ describe("聴いて調整する", () => {
         }),
     });
     const user = await renderApp();
-    await user.click(screen.getByRole("button", { name: RUN }));
+    await user.type(screen.getByRole("textbox"), "太く");
+    await user.click(screen.getByRole("button", { name: SEND }));
     expect(await screen.findByText(/マウスが動かされた/)).toHaveTextContent(
       "ここまでの 1 件の変更は「元に戻す」で戻せる",
     );
   });
 
-  it("AI に届く前に止まったときはエラーだけを出す", async () => {
-    setupBackend({ run_cycle: () => report({ explanations: [], error: "HTTP 503" }) });
+  it("AI に届く前に止まったときはエラーだけを出し、指示を戻す", async () => {
+    setupBackend({ send_message: () => report({ explanations: [], error: "HTTP 503" }) });
     const user = await renderApp();
-    await user.click(screen.getByRole("button", { name: RUN }));
+    await user.type(screen.getByRole("textbox"), "太く");
+    await user.click(screen.getByRole("button", { name: SEND }));
     expect(await screen.findByText("HTTP 503")).toBeInTheDocument();
     expect(screen.queryByText("変更はなかった。")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("太く");
+  });
+
+  it("値を変えた後に止まったときは、指示を戻さない (送り直すと二重に変わる)", async () => {
+    setupBackend({
+      send_message: () =>
+        report({
+          changes: [
+            { kind: "set_value", block: "Amp", parameter: "Bass", previous_value: "5", value: "6" },
+          ],
+          error: "マウスが動かされた",
+          undo_depth: 1,
+        }),
+    });
+    const user = await renderApp();
+    await user.type(screen.getByRole("textbox"), "太く");
+    await user.click(screen.getByRole("button", { name: SEND }));
+    await screen.findByText(/マウスが動かされた/);
+    expect(screen.getByRole("textbox")).toHaveValue("");
   });
 
   it("処理中は進み具合を表示し、ボタンを押せない", async () => {
     let finish: (r: unknown) => void = () => {};
-    setupBackend({ run_cycle: () => new Promise((r) => (finish = r)) });
+    setupBackend({ send_message: () => new Promise((r) => (finish = r)) });
     const user = await renderApp();
-    await user.click(screen.getByRole("button", { name: RUN }));
-    await emit("progress", { stage: "record", message: "5 秒録音中" });
-    expect(await screen.findByText("5 秒録音中")).toBeInTheDocument();
+    await user.type(screen.getByRole("textbox"), "太く");
+    await user.click(screen.getByRole("button", { name: SEND }));
+    await emit("progress", { stage: "ai", message: "AI に問い合わせ中" });
+    expect(await screen.findByText("AI に問い合わせ中")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "処理中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "● 録音" })).toBeDisabled();
     finish(report());
-    expect(await screen.findByRole("button", { name: RUN })).toBeEnabled();
-    expect(screen.queryByText("5 秒録音中")).not.toBeInTheDocument();
+    expect(await screen.findByText("高域を下げた")).toBeInTheDocument();
+    expect(screen.queryByText("AI に問い合わせ中")).not.toBeInTheDocument();
+  });
+});
+
+describe("自動ループ", () => {
+  async function renderAuto() {
+    const user = await renderApp();
+    await user.click(screen.getByRole("radio", { name: "自動ループ" }));
+    return user;
+  }
+
+  it("目標・デバイス・録音秒数・上限を渡して始め、毎回の結果と終わった理由を表示する", async () => {
+    let finish: (r: unknown) => void = () => {};
+    let depth = 0;
+    const b = setupBackend({
+      start_loop: () => new Promise((r) => (finish = r)),
+      undo_depth: () => depth,
+    });
+    const user = await renderAuto();
+    await user.click(screen.getByRole("radio", { name: "3 秒" }));
+    await user.click(screen.getByRole("radio", { name: "20 回" }));
+    await user.type(screen.getByRole("textbox"), "リファレンスに近づけて");
+    await user.click(screen.getByRole("button", { name: "▶ 自動ループを始める" }));
+
+    await waitFor(() =>
+      expect(b.callsTo("start_loop")).toEqual([
+        { instruction: "リファレンスに近づけて", deviceId: "coreaudio:stomp", seconds: 3, maxIterations: 20 },
+      ]),
+    );
+    await emit("loop_iteration", {
+      iteration: 1,
+      max: 20,
+      report: report({ explanations: ["Bass を上げた"], undo_depth: 1 }),
+    });
+    expect(await screen.findByText("Bass を上げた")).toBeInTheDocument();
+    expect(screen.getByText(/ループ 1\/20/)).toBeInTheDocument();
+    await emit("loop_iteration", {
+      iteration: 2,
+      max: 20,
+      report: report({ explanations: ["これで十分近い"], goal_reached: true, undo_depth: 1 }),
+    });
+    expect(await screen.findByText(/目標に届いた/)).toBeInTheDocument();
+
+    depth = 1;
+    finish({ iterations: 2, reason: "AI が目標に届いたと判断した", undo_depth: 1 });
+    expect(
+      await screen.findByText("自動ループを終えた (2 回): AI が目標に届いたと判断した"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "▶ 自動ループを始める" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "↶ 戻す (1)" })).toBeEnabled();
+  });
+
+  it("ループ中は止められ、指示を足せる。戻すは押せない", async () => {
+    let finish: (r: unknown) => void = () => {};
+    const b = setupBackend({
+      start_loop: () => new Promise((r) => (finish = r)),
+      stop_loop: () => null,
+      add_loop_instruction: () => null,
+      undo_depth: () => 1,
+    });
+    const user = await renderAuto();
+    await user.click(screen.getByRole("button", { name: "▶ 自動ループを始める" }));
+    const stop = await screen.findByRole("button", { name: "■ ループを止める" });
+    expect(screen.getByRole("button", { name: /戻す/ })).toBeDisabled();
+
+    await user.type(screen.getByRole("textbox"), "もう少し歪ませて");
+    await user.click(screen.getByRole("button", { name: "指示を追加" }));
+    await waitFor(() => expect(b.callsTo("add_loop_instruction")).toEqual([{ text: "もう少し歪ませて" }]));
+    expect(screen.getByText(/次の回から加える/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("");
+
+    await user.click(stop);
+    await waitFor(() => expect(b.callsTo("stop_loop")).toHaveLength(1));
+    expect(screen.getByRole("button", { name: "止めています…" })).toBeDisabled();
+    finish({ iterations: 1, reason: "停止ボタンで止めた", undo_depth: 1 });
+    expect(await screen.findByText(/停止ボタンで止めた/)).toBeInTheDocument();
+  });
+
+  it("⌘↩ でループ中は指示を足す", async () => {
+    const b = setupBackend({
+      start_loop: () => new Promise(() => {}),
+      add_loop_instruction: () => null,
+    });
+    const user = await renderAuto();
+    await user.type(screen.getByRole("textbox"), "目標{Meta>}{Enter}{/Meta}");
+    await waitFor(() => expect(b.callsTo("start_loop")).toHaveLength(1));
+    await user.type(screen.getByRole("textbox"), "追加{Meta>}{Enter}{/Meta}");
+    await waitFor(() => expect(b.callsTo("add_loop_instruction")).toEqual([{ text: "追加" }]));
+  });
+
+  it("始められないときはエラーを出し、元の状態に戻る", async () => {
+    setupBackend({
+      start_loop: () => {
+        throw "「HX Edit」のウィンドウが見つかりません";
+      },
+    });
+    const user = await renderAuto();
+    await user.click(screen.getByRole("button", { name: "▶ 自動ループを始める" }));
+    expect(await screen.findByText(/ウィンドウが見つかりません/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "▶ 自動ループを始める" })).toBeEnabled();
+  });
+
+  it("モードを覚えておく", async () => {
+    setupBackend();
+    await renderAuto();
+    expect(localStorage.getItem("mode")).toBe("auto");
   });
 });
 
@@ -163,14 +389,15 @@ describe("元に戻す", () => {
     let depth = 0;
     const b = setupBackend({
       undo_depth: () => depth,
-      run_cycle: () => report({ undo_depth: (depth = 1) }),
+      send_message: () => report({ undo_depth: (depth = 1) }),
       undo_last: () => report({ explanations: [], undo_depth: (depth = 0) }),
     });
     const user = await renderApp();
     const undo = screen.getByRole("button", { name: /戻す/ });
     expect(undo).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: RUN }));
+    await user.type(screen.getByRole("textbox"), "太く");
+    await user.click(screen.getByRole("button", { name: "送信" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "↶ 戻す (1)" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "↶ 戻す (1)" }));
     expect(await screen.findByText("直前の変更を元に戻した。")).toBeInTheDocument();

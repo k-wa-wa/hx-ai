@@ -46,6 +46,9 @@ export function report(overrides: Partial<CycleReport> = {}): CycleReport {
     rounds: 1,
     undo_depth: 0,
     not_restored: [],
+    goal_reached: false,
+    interrupted: false,
+    recording_kept: false,
     ...overrides,
   };
 }

@@ -79,6 +79,30 @@ export interface CycleReport {
   rounds: number;
   undo_depth: number;
   not_restored: RestoreTarget[];
+  /** AI が「目標に届いた」と判断したか。 */
+  goal_reached: boolean;
+  /** 自動操作がガードレールで止まったか。 */
+  interrupted: boolean;
+  /** 送った録音が使われずに残っているか。 */
+  recording_kept: boolean;
+}
+
+export interface RecordingInfo {
+  seconds: number;
+  peak_dbfs: number;
+}
+
+export interface LoopSummary {
+  iterations: number;
+  reason: string;
+  undo_depth: number;
+}
+
+/** 自動ループの 1 回分の結果 (イベント "loop_iteration")。 */
+export interface LoopIteration {
+  iteration: number;
+  max: number;
+  report: CycleReport;
 }
 
 export interface Progress {
@@ -101,8 +125,14 @@ export const api = {
   clearReference: () => invoke<void>("clear_reference"),
   undoDepth: () => invoke<number>("undo_depth"),
   clearConversation: () => invoke<void>("clear_conversation"),
-  runCycle: (instruction: string, deviceId: string | null, seconds: number) =>
-    invoke<CycleReport>("run_cycle", { instruction, deviceId, seconds }),
+  startRecording: (deviceId: string | null) => invoke<void>("start_recording", { deviceId }),
+  stopRecording: () => invoke<RecordingInfo>("stop_recording"),
+  discardRecording: () => invoke<void>("discard_recording"),
+  sendMessage: (instruction: string) => invoke<CycleReport>("send_message", { instruction }),
+  startLoop: (instruction: string, deviceId: string | null, seconds: number, maxIterations: number) =>
+    invoke<LoopSummary>("start_loop", { instruction, deviceId, seconds, maxIterations }),
+  stopLoop: () => invoke<void>("stop_loop"),
+  addLoopInstruction: (text: string) => invoke<void>("add_loop_instruction", { text }),
   undoLast: () => invoke<CycleReport>("undo_last"),
 };
 

@@ -10,7 +10,15 @@ export interface ChatMessage {
   meta?: string;
 }
 
-export function ChatLog({ messages, progress }: { messages: ChatMessage[]; progress: string | null }) {
+export function ChatLog({
+  messages,
+  progress,
+  emptyHint,
+}: {
+  messages: ChatMessage[];
+  progress: string | null;
+  emptyHint: string;
+}) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth" });
@@ -19,9 +27,7 @@ export function ChatLog({ messages, progress }: { messages: ChatMessage[]; progr
   return (
     <div className="chat">
       {messages.length === 0 && (
-        <div className="muted small empty">
-          HX Edit を横に並べ、指示を書いて「聴いて調整する」を押す。押したら録音が始まるので、ギターを弾く。
-        </div>
+        <div className="muted small empty">{emptyHint}</div>
       )}
       {messages.map((m) => (
         <div key={m.id} className={`msg ${m.role}`}>

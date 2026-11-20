@@ -7,20 +7,29 @@ import {
   CycleReport,
   errorText,
   InputDevice,
+  LoopIteration,
   PermissionStatus,
   Progress,
+  RecordingInfo,
   SettingsView,
   TargetWindow,
 } from "./api";
 import { ChatLog, ChatMessage } from "./components/ChatLog";
 import { pickDevice } from "./devices";
 import { allGranted, PermissionDots, PermissionPanel } from "./components/PermissionPanel";
-import { ReferenceDrop } from "./components/ReferenceDrop";
+import { formatTime, ReferenceDrop } from "./components/ReferenceDrop";
 import { SettingsPanel } from "./components/SettingsPanel";
 import "./App.css";
 
 const SHORTCUT = "CommandOrControl+Alt+H";
 const SHORTCUT_LABEL = "⌘⌥H";
+
+/** 手動の録音の上限 (秒)。Rust 側の MAX_RECORD_SECONDS と同じ。 */
+export const MAX_RECORD_SECONDS = 30;
+const LOOP_SECONDS = [3, 5, 10];
+const LOOP_ITERATIONS = [5, 10, 20];
+
+type Mode = "manual" | "auto";
 
 // 画面の好みだけを覚える。消えても困らないので失敗は無視する
 function loadPref(key: string): string | null {
@@ -43,7 +52,15 @@ let nextId = 1;
 export default function App() {
   const [devices, setDevices] = useState<InputDevice[]>([]);
   const [deviceId, setDeviceId] = useState<string | null>(null);
-  const [seconds, setSeconds] = useState<number>(() => (loadPref("seconds") === "3" ? 3 : 5));
+  const [mode, setMode] = useState<Mode>(() => (loadPref("mode") === "auto" ? "auto" : "manual"));
+  const [seconds, setSeconds] = useState<number>(() => {
+    const v = Number(loadPref("seconds"));
+    return LOOP_SECONDS.includes(v) ? v : 5;
+  });
+  const [maxIterations, setMaxIterations] = useState<number>(() => {
+    const v = Number(loadPref("maxIterations"));
+    return LOOP_ITERATIONS.includes(v) ? v : 10;
+  });
   const [onTop, setOnTop] = useState<boolean>(() => loadPref("onTop") !== "false");
   const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
@@ -54,7 +71,14 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [looping, setLooping] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [undoDepth, setUndoDepth] = useState(0);
+  /** 録音を始めた時刻 (録音中だけ)。 */
+  const [recordingSince, setRecordingSince] = useState<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
+  /** 録り終えて、まだ送っていない録音。 */
+  const [pending, setPending] = useState<RecordingInfo | null>(null);
 
   const push = useCallback((m: Omit<ChatMessage, "id">) => {
     setMessages((prev) => [...prev, { ...m, id: nextId++ }]);
@@ -143,6 +167,8 @@ export default function App() {
     if (deviceId) savePref("deviceId", deviceId);
   }, [deviceId]);
   useEffect(() => savePref("seconds", String(seconds)), [seconds]);
+  useEffect(() => savePref("maxIterations", String(maxIterations)), [maxIterations]);
+  useEffect(() => savePref("mode", mode), [mode]);
 
   useEffect(() => {
     const un = listen<Progress>("progress", (e) => {
@@ -154,10 +180,12 @@ export default function App() {
   }, []);
 
   const showReport = useCallback(
-    (r: CycleReport, kind: "adjust" | "undo") => {
+    (r: CycleReport, kind: "adjust" | "undo", label?: string) => {
       const meta: string[] = [];
+      if (label) meta.push(label);
       if (r.recording_peak_dbfs !== null) meta.push(`録音ピーク ${r.recording_peak_dbfs.toFixed(1)} dBFS`);
       if (r.rounds > 1) meta.push(`撮影 ${r.rounds} 回`);
+      if (r.goal_reached) meta.push("目標に届いた");
       const hasResult = r.explanations.length > 0 || r.changes.length > 0 || r.not_restored.length > 0;
       // AI に届く前に止まったときは、エラーだけを出す
       if (hasResult || !r.error) {
@@ -186,22 +214,156 @@ export default function App() {
     [push],
   );
 
-  const runCycle = useCallback(async () => {
-    if (busy) return;
-    const text = instruction.trim();
-    setBusy(true);
-    push({ role: "user", text: text || "(指示なし)" });
-    setInstruction("");
+  // 自動ループの 1 回ごとの結果
+  useEffect(() => {
+    const un = listen<LoopIteration>("loop_iteration", (e) => {
+      const { iteration, max, report } = e.payload;
+      showReport(report, "adjust", `ループ ${iteration}/${max}`);
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [showReport]);
+
+  // 録音中の経過時間。上限に達したら止める
+  const stopRecordingRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (recordingSince === null) return;
+    const t = setInterval(() => {
+      const sec = (Date.now() - recordingSince) / 1000;
+      setElapsed(sec);
+      if (sec >= MAX_RECORD_SECONDS) {
+        clearInterval(t);
+        stopRecordingRef.current();
+      }
+    }, 200);
+    return () => clearInterval(t);
+  }, [recordingSince]);
+
+  // 録音中か。ボタンの連打やタイマーで 2 回止めないよう、描画を待たずに見られる ref に持つ
+  const recordingRef = useRef(false);
+  const startRecording = useCallback(async () => {
     try {
-      showReport(await api.runCycle(text, deviceId, seconds), "adjust");
+      await api.startRecording(deviceId);
+      recordingRef.current = true;
+      setPending(null);
+      setElapsed(0);
+      setRecordingSince(Date.now());
     } catch (e) {
       pushError(errorText(e));
+    }
+  }, [deviceId, pushError]);
+
+  const stopRecording = useCallback(async () => {
+    if (!recordingRef.current) return;
+    recordingRef.current = false;
+    setRecordingSince(null);
+    try {
+      setPending(await api.stopRecording());
+    } catch (e) {
+      pushError(errorText(e));
+    }
+  }, [pushError]);
+  stopRecordingRef.current = stopRecording;
+
+  const toggleRecording = useCallback(() => {
+    if (busy) return;
+    if (recordingSince === null) startRecording();
+    else stopRecording();
+  }, [busy, recordingSince, startRecording, stopRecording]);
+
+  const discardRecording = async () => {
+    try {
+      await api.discardRecording();
+      setPending(null);
+    } catch (e) {
+      pushError(errorText(e));
+    }
+  };
+
+  const send = useCallback(async () => {
+    if (busy || recordingSince !== null) return;
+    const text = instruction.trim();
+    if (!text && !pending) return;
+    setBusy(true);
+    const attachment = pending ? `🎙 録音 ${pending.seconds.toFixed(1)} 秒` : null;
+    push({ role: "user", text: [text, attachment].filter(Boolean).join("\n") });
+    setInstruction("");
+    try {
+      const r = await api.sendMessage(text);
+      showReport(r, "adjust");
+      if (!r.recording_kept) setPending(null);
+      // 何も変わらずに失敗したときは、送り直せるように指示を戻す
+      if (r.error && r.changes.length === 0) setInstruction(text);
+    } catch (e) {
+      pushError(errorText(e));
+      setInstruction(text);
     } finally {
       setProgress(null);
       setBusy(false);
       api.undoDepth().then(setUndoDepth).catch(() => {});
     }
-  }, [busy, instruction, deviceId, seconds, push, pushError, showReport]);
+  }, [busy, recordingSince, instruction, pending, push, pushError, showReport]);
+
+  const startLoop = useCallback(async () => {
+    if (busy) return;
+    const text = instruction.trim();
+    setBusy(true);
+    setLooping(true);
+    push({
+      role: "user",
+      text: `${text || "(指示なし)"}\n▶ 自動ループ (${seconds} 秒録音 · 最大 ${maxIterations} 回)`,
+    });
+    setInstruction("");
+    try {
+      const r = await api.startLoop(text, deviceId, seconds, maxIterations);
+      push({ role: "system", text: `自動ループを終えた (${r.iterations} 回): ${r.reason}` });
+      setUndoDepth(r.undo_depth);
+    } catch (e) {
+      pushError(errorText(e));
+    } finally {
+      setProgress(null);
+      setBusy(false);
+      setLooping(false);
+      setStopping(false);
+      api.undoDepth().then(setUndoDepth).catch(() => {});
+    }
+  }, [busy, instruction, deviceId, seconds, maxIterations, push, pushError]);
+
+  const stopLoop = useCallback(async () => {
+    setStopping(true);
+    try {
+      await api.stopLoop();
+    } catch (e) {
+      setStopping(false);
+      pushError(errorText(e));
+    }
+  }, [pushError]);
+
+  const addLoopInstruction = useCallback(async () => {
+    const text = instruction.trim();
+    if (!text) return;
+    try {
+      await api.addLoopInstruction(text);
+      push({ role: "user", text: `${text}\n(次の回から加える)` });
+      setInstruction("");
+    } catch (e) {
+      pushError(errorText(e));
+    }
+  }, [instruction, push, pushError]);
+
+  /** ⌘↩ とショートカットで呼ぶ、いまのモードの主な操作。 */
+  const submit = useCallback(() => {
+    if (mode === "manual") send();
+    else if (looping) addLoopInstruction();
+    else startLoop();
+  }, [mode, looping, send, addLoopInstruction, startLoop]);
+
+  const shortcut = useCallback(() => {
+    if (mode === "manual") toggleRecording();
+    else if (looping) stopLoop();
+    else startLoop();
+  }, [mode, looping, toggleRecording, stopLoop, startLoop]);
 
   const undo = useCallback(async () => {
     if (busy) return;
@@ -218,9 +380,10 @@ export default function App() {
     }
   }, [busy, push, pushError, showReport]);
 
-  // グローバルショートカットからも同じ処理を呼ぶ。登録は一度だけにし、最新の関数は ref で引く
-  const runRef = useRef(runCycle);
-  runRef.current = runCycle;
+  // グローバルショートカット: 手動モードは録音の開始/停止、自動ループは開始/停止。
+  // 登録は一度だけにし、最新の関数は ref で引く
+  const runRef = useRef(shortcut);
+  runRef.current = shortcut;
   useEffect(() => {
     let registered = false;
     register(SHORTCUT, (e) => {
@@ -287,7 +450,7 @@ export default function App() {
             className="device"
             value={deviceId ?? ""}
             onChange={(e) => setDeviceId(e.target.value || null)}
-            disabled={busy}
+            disabled={busy || recordingSince !== null}
             title="オーディオ入力"
           >
             {devices.length === 0 && <option value="">入力デバイスがありません</option>}
@@ -302,17 +465,22 @@ export default function App() {
           </button>
         </div>
         <div className="row">
-          <div className="segmented" role="radiogroup" aria-label="録音時間">
-            {[3, 5].map((s) => (
+          <div className="segmented" role="radiogroup" aria-label="モード">
+            {(
+              [
+                ["manual", "手動"],
+                ["auto", "自動ループ"],
+              ] as const
+            ).map(([m, label]) => (
               <button
-                key={s}
+                key={m}
                 role="radio"
-                aria-checked={seconds === s}
-                className={seconds === s ? "on" : ""}
-                onClick={() => setSeconds(s)}
-                disabled={busy}
+                aria-checked={mode === m}
+                className={mode === m ? "on" : ""}
+                onClick={() => setMode(m)}
+                disabled={busy || recordingSince !== null}
               >
-                {s} 秒
+                {label}
               </button>
             ))}
           </div>
@@ -322,36 +490,124 @@ export default function App() {
               : `${settings?.effective_target_app ?? "HX Edit"} 未検出`}
           </div>
         </div>
+        {mode === "auto" && (
+          <div className="row small">
+            <span className="muted">録音</span>
+            <div className="segmented" role="radiogroup" aria-label="1 回の録音時間">
+              {LOOP_SECONDS.map((s) => (
+                <button
+                  key={s}
+                  role="radio"
+                  aria-checked={seconds === s}
+                  className={seconds === s ? "on" : ""}
+                  onClick={() => setSeconds(s)}
+                  disabled={busy}
+                >
+                  {s} 秒
+                </button>
+              ))}
+            </div>
+            <span className="muted">上限</span>
+            <div className="segmented" role="radiogroup" aria-label="ループの上限">
+              {LOOP_ITERATIONS.map((n) => (
+                <button
+                  key={n}
+                  role="radio"
+                  aria-checked={maxIterations === n}
+                  className={maxIterations === n ? "on" : ""}
+                  onClick={() => setMaxIterations(n)}
+                  disabled={busy}
+                >
+                  {n} 回
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         <ReferenceDrop disabled={busy} onError={pushError} />
       </section>
 
-      <ChatLog messages={messages} progress={progress} />
+      <ChatLog
+        messages={messages}
+        progress={progress}
+        emptyHint={
+          mode === "manual"
+            ? "HX Edit を横に並べ、「録音」を押してギターを弾く。止めたら指示を書いて送る。録音なしで指示だけ送ることもできる。"
+            : "ルーパーなどで音を出し続け、目標を書いて「自動ループを始める」を押す。録音 → 調整 を、AI が目標に届いたと判断するか上限の回数まで繰り返す。マウスに触ると止まる。"
+        }
+      />
 
       <footer className="composer">
+        {mode === "manual" && pending && (
+          <div className="attachment">
+            <span>
+              🎙 録音 {pending.seconds.toFixed(1)} 秒 · ピーク {pending.peak_dbfs.toFixed(1)} dBFS
+            </span>
+            <button className="link" onClick={discardRecording} disabled={busy} aria-label="録音を消す">
+              消す
+            </button>
+          </div>
+        )}
         <textarea
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder="例: もっとハイを削って太く / ソロ用にディレイを足して"
+          placeholder={
+            mode === "manual"
+              ? "例: もっとハイを削って太く / ソロ用にディレイを足して"
+              : looping
+                ? "次の回から加える指示 (例: もう少し歪ませて)"
+                : "目標 (例: リファレンスに近づけて / 抜けの良いクランチに)"
+          }
           rows={2}
-          disabled={busy}
+          disabled={busy && !looping}
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
-              runCycle();
+              submit();
             }
           }}
         />
         <div className="row">
-          <button className="primary grow" onClick={runCycle} disabled={busy}>
-            {busy ? "処理中…" : `🎧 聴いて調整する`}
-          </button>
+          {mode === "manual" ? (
+            <>
+              <button
+                className={`secondary ${recordingSince !== null ? "recording" : ""}`}
+                onClick={toggleRecording}
+                disabled={busy}
+              >
+                {recordingSince !== null ? `■ 停止 ${formatTime(elapsed)}` : "● 録音"}
+              </button>
+              <button
+                className="primary grow"
+                onClick={send}
+                disabled={busy || recordingSince !== null || (!instruction.trim() && !pending)}
+              >
+                {busy ? "処理中…" : "送信"}
+              </button>
+            </>
+          ) : looping ? (
+            <>
+              <button className="primary grow" onClick={stopLoop} disabled={stopping}>
+                {stopping ? "止めています…" : "■ ループを止める"}
+              </button>
+              <button className="secondary" onClick={addLoopInstruction} disabled={!instruction.trim()}>
+                指示を追加
+              </button>
+            </>
+          ) : (
+            <button className="primary grow" onClick={startLoop} disabled={busy}>
+              ▶ 自動ループを始める
+            </button>
+          )}
           <button className="secondary" onClick={undo} disabled={busy || undoDepth === 0} title="1 つ前の状態に戻す">
             ↶ 戻す{undoDepth > 0 ? ` (${undoDepth})` : ""}
           </button>
         </div>
         <div className="hint muted small">
           <span>
-            {SHORTCUT_LABEL} でどこからでも実行 · ⌘↩ で送信
+            {mode === "manual"
+              ? `${SHORTCUT_LABEL} で録音の開始/停止 · ⌘↩ で送信`
+              : `${SHORTCUT_LABEL} でループの開始/停止 · ⌘↩ で${looping ? "指示を追加" : "開始"}`}
           </span>
           {messages.length > 0 && (
             <button className="link" onClick={clearChat} disabled={busy}>
