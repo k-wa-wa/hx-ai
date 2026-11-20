@@ -106,12 +106,6 @@ button:not(:disabled):hover {
   border-color: var(--accent);
   background: #3a2321;
 }
-.perm-dots {
-  display: flex;
-  gap: 4px;
-  padding: 7px 8px;
-}
-
 .dot {
   display: inline-block;
   width: 8px;
@@ -156,11 +150,6 @@ button:not(:disabled):hover {
 .perm-text {
   flex: 1;
   min-width: 0;
-}
-.perm-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
 }
 .small-btn {
   font-size: 11px;

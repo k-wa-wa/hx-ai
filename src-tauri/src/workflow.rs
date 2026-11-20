@@ -342,7 +342,7 @@ fn ensure_permissions(need_microphone: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "{} の権限がありません。右上の権限表示からシステム設定で許可してください",
+            "{} の権限がありません。右上の ⚙︎ (設定) の「macOS の権限」から許可してください",
             missing.join("・")
         ))
     }
@@ -824,7 +824,7 @@ pub fn start_recording(state: &AppState, device_id: Option<String>) -> Result<()
     }
     if macos::permission_status().microphone == "denied" {
         return Err(
-            "マイクの権限がありません。右上の権限表示からシステム設定で許可してください"
+            "マイクの権限がありません。右上の ⚙︎ (設定) の「macOS の権限」から許可してください"
                 .to_string(),
         );
     }

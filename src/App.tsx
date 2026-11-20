@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   api,
   CycleReport,
@@ -15,7 +14,7 @@ import {
 } from "./api";
 import { ChatLog, ChatMessage } from "./components/ChatLog";
 import { pickDevice } from "./devices";
-import { allGranted, PermissionDots, PermissionPanel } from "./components/PermissionPanel";
+import { allGranted, PermissionPanel } from "./components/PermissionPanel";
 import { formatTime, ReferenceDrop } from "./components/ReferenceDrop";
 import { SettingsPanel } from "./components/SettingsPanel";
 import "./App.css";
@@ -57,12 +56,11 @@ export default function App() {
     const v = Number(loadPref("maxIterations"));
     return LOOP_ITERATIONS.includes(v) ? v : 10;
   });
-  const [onTop, setOnTop] = useState<boolean>(() => loadPref("onTop") !== "false");
   const [permissions, setPermissions] = useState<PermissionStatus | null>(null);
   const [settings, setSettings] = useState<SettingsView | null>(null);
   const [target, setTarget] = useState<TargetWindow | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
-  const [panel, setPanel] = useState<"none" | "permissions" | "settings">("none");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [instruction, setInstruction] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
@@ -119,17 +117,17 @@ export default function App() {
       try {
         const s = await api.getSettings();
         setSettings(s);
-        if (s.api_key_source === "missing") setPanel("settings");
+        if (s.api_key_source === "missing") setSettingsOpen(true);
       } catch (e) {
         pushError(errorText(e));
       }
     })();
   }, [refreshPermissions, refreshDevices, pushError]);
 
-  // 権限が揃っていなければ最初に案内する
+  // 権限が揃っていなければ最初に設定画面を開いて案内する
   useEffect(() => {
-    if (permissions && !allGranted(permissions) && panel === "none" && messages.length === 0) {
-      setPanel("permissions");
+    if (permissions && !allGranted(permissions) && messages.length === 0) {
+      setSettingsOpen(true);
     }
     // 起動直後の 1 回だけでよい
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -151,13 +149,6 @@ export default function App() {
     const t = setInterval(refreshTarget, 5000);
     return () => clearInterval(t);
   }, [busy, refreshTarget, settings]);
-
-  useEffect(() => {
-    getCurrentWindow()
-      .setAlwaysOnTop(onTop)
-      .catch((e) => pushError(`常に手前に表示を切り替えられません: ${errorText(e)}`));
-    savePref("onTop", String(onTop));
-  }, [onTop, pushError]);
 
   useEffect(() => {
     if (deviceId) savePref("deviceId", deviceId);
@@ -379,24 +370,14 @@ export default function App() {
     }
   };
 
-  const togglePanel = (p: "permissions" | "settings") => setPanel((cur) => (cur === p ? "none" : p));
-
   return (
     <div className="app">
       <header className="header">
         <div className="brand">HX AI</div>
         <div className="header-actions">
-          <PermissionDots status={permissions} onClick={() => togglePanel("permissions")} />
           <button
-            className={`icon-btn ${onTop ? "active" : ""}`}
-            onClick={() => setOnTop((v) => !v)}
-            title={onTop ? "常に手前に表示: オン" : "常に手前に表示: オフ"}
-          >
-            📌
-          </button>
-          <button
-            className={`icon-btn ${panel === "settings" ? "active" : ""}`}
-            onClick={() => togglePanel("settings")}
+            className={`icon-btn ${settingsOpen ? "active" : ""}`}
+            onClick={() => setSettingsOpen((v) => !v)}
             title="設定"
           >
             ⚙︎
@@ -404,10 +385,10 @@ export default function App() {
         </div>
       </header>
 
-      {panel === "permissions" && (
+      {settingsOpen && (
         <PermissionPanel status={permissions} onRefresh={refreshPermissions} onError={pushError} />
       )}
-      {panel === "settings" && (
+      {settingsOpen && (
         <SettingsPanel
           view={settings}
           onSaved={(v) => {

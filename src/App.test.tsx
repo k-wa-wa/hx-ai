@@ -34,24 +34,62 @@ describe("起動時", () => {
     expect(await screen.findByText("API キーがありません")).toBeInTheDocument();
   });
 
-  it("権限が揃っていなければ権限の案内を開く", async () => {
+  it("権限が揃っていなければ設定画面を開き、権限を案内する", async () => {
     setupBackend({ permission_status: () => ({ ...GRANTED, accessibility: "denied" }) });
     await renderApp();
     expect(await screen.findByText("macOS の権限")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "設定を開く" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "許可する" })).toHaveLength(1);
+    expect(screen.getByLabelText("モデル")).toBeInTheDocument();
   });
 
-  it("常に手前に表示を既定でオンにし、切り替えられる", async () => {
+  it("権限が揃っていれば設定画面を開かない", async () => {
+    setupBackend();
+    await renderApp();
+    expect(screen.queryByText("macOS の権限")).not.toBeInTheDocument();
+  });
+
+  it("常に手前に表示は使わない", async () => {
     const b = setupBackend();
+    await renderApp();
+    expect(b.callsTo("plugin:window|set_always_on_top")).toEqual([]);
+  });
+});
+
+describe("macOS の権限", () => {
+  it("「許可する」で許可を求め、少し後に状態を確かめ直す", async () => {
+    let status = { ...GRANTED, screen_recording: "denied" };
+    const b = setupBackend({
+      permission_status: () => status,
+      grant_permission: () => {
+        status = GRANTED;
+        return null;
+      },
+    });
     const user = await renderApp();
-    await waitFor(() =>
-      expect(b.callsTo("plugin:window|set_always_on_top").slice(-1)[0]).toMatchObject({ value: true }),
-    );
-    await user.click(screen.getByTitle("常に手前に表示: オン"));
-    await waitFor(() =>
-      expect(b.callsTo("plugin:window|set_always_on_top").slice(-1)[0]).toMatchObject({ value: false }),
-    );
-    expect(localStorage.getItem("onTop")).toBe("false");
+    await user.click(await screen.findByRole("button", { name: "許可する" }));
+    expect(b.callsTo("grant_permission")).toEqual([{ kind: "screen_recording" }]);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "許可する" })).not.toBeInTheDocument());
+    expect(screen.getAllByText("許可済み")).toHaveLength(3);
+  });
+
+  it("↻ で状態を確かめ直す", async () => {
+    const b = setupBackend({ permission_status: () => ({ ...GRANTED, microphone: "not_determined" }) });
+    const user = await renderApp();
+    const before = b.callsTo("permission_status").length;
+    await user.click(await screen.findByRole("button", { name: "再確認" }));
+    await waitFor(() => expect(b.callsTo("permission_status").length).toBe(before + 1));
+  });
+
+  it("許可を求められないときはエラーを出す", async () => {
+    setupBackend({
+      permission_status: () => ({ ...GRANTED, microphone: "denied" }),
+      grant_permission: () => {
+        throw "システム設定を開けません";
+      },
+    });
+    const user = await renderApp();
+    await user.click(await screen.findByRole("button", { name: "許可する" }));
+    expect(await screen.findByText("システム設定を開けません")).toBeInTheDocument();
   });
 });
 

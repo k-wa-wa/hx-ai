@@ -9,6 +9,7 @@ mod capture;
 mod config;
 mod geometry;
 mod macos;
+mod permission;
 mod sound;
 mod workflow;
 #[cfg(test)]
@@ -96,13 +97,8 @@ fn permission_status() -> macos::PermissionStatus {
 }
 
 #[tauri::command]
-fn request_permission(kind: String) -> Result<(), String> {
-    macos::request_permission(&kind)
-}
-
-#[tauri::command]
-fn open_permission_settings(kind: String) -> Result<(), String> {
-    macos::open_settings(&kind)
+fn grant_permission(kind: String) -> Result<(), String> {
+    macos::grant_permission(&kind)
 }
 
 #[tauri::command]
@@ -247,8 +243,7 @@ pub fn run() {
             save_settings,
             list_input_devices,
             permission_status,
-            request_permission,
-            open_permission_settings,
+            grant_permission,
             find_target_window,
             set_reference,
             set_reference_start,

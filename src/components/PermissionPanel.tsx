@@ -12,27 +12,6 @@ export function allGranted(s: PermissionStatus | null): boolean {
   return !!s && KINDS.every((k) => s[k] === "granted");
 }
 
-/** ヘッダーに並べる小さな状態表示。押すと詳細を開く。 */
-export function PermissionDots({
-  status,
-  onClick,
-}: {
-  status: PermissionStatus | null;
-  onClick: () => void;
-}) {
-  return (
-    <button className="perm-dots" onClick={onClick} title="macOS の権限">
-      {KINDS.map((k) => (
-        <span
-          key={k}
-          className={`dot ${status?.[k] ?? "unknown"}`}
-          title={`${LABELS[k].name}: ${status?.[k] ?? "確認中"}`}
-        />
-      ))}
-    </button>
-  );
-}
-
 export function PermissionPanel({
   status,
   onRefresh,
@@ -55,8 +34,8 @@ export function PermissionPanel({
     <section className="panel">
       <div className="panel-title">
         macOS の権限
-        <button className="link" onClick={onRefresh}>
-          再確認
+        <button className="icon-btn" onClick={onRefresh} title="再確認" aria-label="再確認">
+          ↻
         </button>
       </div>
       {KINDS.map((k) => {
@@ -71,24 +50,15 @@ export function PermissionPanel({
             {s === "granted" ? (
               <span className="muted small">許可済み</span>
             ) : (
-              <div className="perm-actions">
-                {/* 一度拒否するとダイアログは出なくなるので、設定画面を開く導線も置く */}
-                <button className="small-btn" onClick={() => run(() => api.requestPermission(k))}>
-                  許可を求める
-                </button>
-                <button
-                  className="small-btn"
-                  onClick={() => run(() => api.openPermissionSettings(k))}
-                >
-                  設定を開く
-                </button>
-              </div>
+              <button className="small-btn" onClick={() => run(() => api.grantPermission(k))}>
+                許可する
+              </button>
             )}
           </div>
         );
       })}
       <p className="muted small">
-        画面収録とアクセシビリティは、システム設定で許可した後にアプリの再起動が必要なことがある。
+        「許可する」で出るダイアログか、開いたシステム設定で許可する。画面収録とアクセシビリティは、許可した後にアプリの再起動が必要なことがある。
       </p>
     </section>
   );

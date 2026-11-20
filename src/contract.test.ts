@@ -65,8 +65,4 @@ describe("フロントエンドと Rust のコマンド", () => {
     }
   });
 
-  it("常に手前に表示の切り替えに必要な権限がある", () => {
-    const perms: string[] = JSON.parse(read("src-tauri/capabilities/default.json")).permissions;
-    expect(perms).toContain("core:window:allow-set-always-on-top");
-  });
 });

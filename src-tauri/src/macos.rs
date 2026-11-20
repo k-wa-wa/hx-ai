@@ -15,6 +15,7 @@ use serde::Serialize;
 use crate::automation::Desktop;
 use crate::capture;
 use crate::geometry::{Rect, ScreenWindow};
+use crate::permission;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -62,9 +63,27 @@ pub fn permission_status() -> PermissionStatus {
     }
 }
 
-/// 権限を求めるダイアログを出す。既に拒否されている場合はダイアログが出ないので、
-/// 呼び出し側でシステム設定を開く。
-pub fn request_permission(kind: &str) -> Result<(), String> {
+/// 「許可する」を押したときの処理。何をするかは `permission::grant_plan` で決める。
+pub fn grant_permission(kind: &str) -> Result<(), String> {
+    let status = permission_status();
+    let state = match kind {
+        "microphone" => &status.microphone,
+        "screen_recording" => &status.screen_recording,
+        "accessibility" => &status.accessibility,
+        other => return Err(format!("不明な権限です: {other}")),
+    };
+    let plan = permission::grant_plan(kind, state)?;
+    if plan.ask {
+        ask_permission(kind)?;
+    }
+    if plan.open_settings {
+        open_settings(kind)?;
+    }
+    Ok(())
+}
+
+/// 許可を求める。初めてならダイアログが出る。
+fn ask_permission(kind: &str) -> Result<(), String> {
     match kind {
         "microphone" => {
             let media_type = unsafe { AVMediaTypeAudio }
@@ -91,24 +110,8 @@ pub fn request_permission(kind: &str) -> Result<(), String> {
     }
 }
 
-/// システム設定の該当ページの URL。
-pub fn settings_url(kind: &str) -> Result<&'static str, String> {
-    match kind {
-        "microphone" => {
-            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
-        }
-        "screen_recording" => {
-            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
-        }
-        "accessibility" => {
-            Ok("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
-        }
-        other => Err(format!("不明な権限です: {other}")),
-    }
-}
-
-pub fn open_settings(kind: &str) -> Result<(), String> {
-    let url = settings_url(kind)?;
+fn open_settings(kind: &str) -> Result<(), String> {
+    let url = permission::settings_url(kind)?;
     let status = std::process::Command::new("/usr/bin/open")
         .arg(url)
         .status()

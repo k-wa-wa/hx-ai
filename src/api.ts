@@ -115,9 +115,8 @@ export const api = {
   saveSettings: (input: SettingsInput) => invoke<SettingsView>("save_settings", { input }),
   listInputDevices: () => invoke<InputDevice[]>("list_input_devices"),
   permissionStatus: () => invoke<PermissionStatus>("permission_status"),
-  requestPermission: (kind: PermissionKind) => invoke<void>("request_permission", { kind }),
-  openPermissionSettings: (kind: PermissionKind) =>
-    invoke<void>("open_permission_settings", { kind }),
+  /** 許可を求める。一度拒否されているなどダイアログが出ないときはシステム設定を開く。 */
+  grantPermission: (kind: PermissionKind) => invoke<void>("grant_permission", { kind }),
   findTargetWindow: () => invoke<TargetWindow>("find_target_window"),
   setReference: (path: string) => invoke<ReferenceInfo>("set_reference", { path }),
   setReferenceStart: (seconds: number) => invoke<ReferenceInfo>("set_reference_start", { seconds }),
