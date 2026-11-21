@@ -34,6 +34,12 @@ pub const MIN_WIDTH: u32 = 40;
 /// 同じ色とみなす各チャンネルの差。
 const TOLERANCE: i32 = 14;
 
+/// 色を取るときに、同じ色が続いていることを確かめる画素の数 (この数 + 1 個続く)。
+const STEADY: u32 = 2;
+
+/// 指した点から塗りかトラックを探す範囲 (ピクセル)。値の文字の幅より広くする。
+const SEARCH: u32 = 80;
+
 /// 塗りの青。青が赤・緑よりはっきり強い。
 fn is_fill(p: &Rgba<u8>) -> bool {
     let [r, g, b, _] = p.0;
@@ -77,32 +83,70 @@ fn read_row(img: &RgbaImage, x: u32, y: u32) -> Result<Slider, String> {
     }
     let px = |x: u32| img.get_pixel(x, y);
     let plain = |x: u32| !is_fill(px(x)) && !is_text(px(x));
-    let at = px(x);
+    // 縁はなめらかに描かれていて中間色の画素があるので、同じ色が続く所から色を取る
+    let steady = |i: u32| {
+        (i + STEADY < img.width()) && (0..=STEADY).all(|k| plain(i + k) && close(px(i + k), px(i)))
+    };
 
-    // バーの塗られていない部分 (トラック) の色を決める
-    let track = if plain(x) {
-        *at
-    } else {
-        let right = (x..img.width()).find(|&i| plain(i));
-        let left = (0..x).rev().find(|&i| plain(i));
-        let (Some(r), Some(l)) = (right, left) else {
-            return Err("スライダーの端が見つかりません".to_string());
-        };
-        if close(px(r), px(l)) {
-            // 塗りの右隣が左隣 (背景) と同じなら、最大まで塗られている
-            return checked(img, l + 1, r, r);
+    // 指した点の周りが塗りかトラックかを決める (文字や縁の中間色は飛ばし、近い方から見る)
+    let near = (0..SEARCH).find_map(|d| {
+        [x.checked_add(d), x.checked_sub(d)]
+            .into_iter()
+            .flatten()
+            .filter(|&i| i < img.width())
+            .find_map(|i| {
+                if is_fill(px(i)) {
+                    Some(None)
+                } else if steady(i) {
+                    Some(Some(i))
+                } else {
+                    None
+                }
+            })
+    });
+    let track = match near {
+        None => return Err("指した位置の周りにスライダーが見つかりません".to_string()),
+        // トラックの上なら、その色がトラックの色
+        Some(Some(i)) => *px(i),
+        // 塗りの上なら、塗りの右隣がトラック。ただし左隣 (背景) と同じなら最大まで塗られている
+        Some(None) => {
+            let right = (x..img.width()).find(|&i| steady(i));
+            let left = (0..x).rev().find(|&i| i >= STEADY && steady(i - STEADY));
+            let (Some(r), Some(l)) = (right, left) else {
+                return Err("スライダーの端が見つかりません".to_string());
+            };
+            if close(px(r), px(l)) {
+                return checked(img, l + 1, r, r);
+            }
+            *px(r)
         }
-        *px(r)
     };
 
     let on_bar = |i: u32| is_fill(px(i)) || is_text(px(i)) || close(px(i), &track);
-    let left = (0..=x).rev().find(|&i| !on_bar(i)).map_or(0, |i| i + 1);
-    let right = (x..img.width())
-        .find(|&i| !on_bar(i))
-        .unwrap_or(img.width());
-    if left == 0 || right == img.width() {
+    // 塗りの端などの中間色で途切れないよう、合わない画素が STEADY 個までなら先を見る
+    let extent = |xs: &mut dyn Iterator<Item = u32>| {
+        let mut last = None;
+        let mut misses = 0;
+        for i in xs {
+            if on_bar(i) {
+                last = Some(i);
+                misses = 0;
+            } else {
+                misses += 1;
+                if misses > STEADY {
+                    return (last, true);
+                }
+            }
+        }
+        (last, false)
+    };
+    let (Some(first), true) = extent(&mut (0..=x).rev()) else {
         return Err("スライダーの端が見つかりません (バーではない所を指しています)".to_string());
-    }
+    };
+    let (Some(last), true) = extent(&mut (x..img.width())) else {
+        return Err("スライダーの端が見つかりません (バーではない所を指しています)".to_string());
+    };
+    let (left, right) = (first, last + 1);
     let fill_end = (left..right)
         .rev()
         .find(|&i| is_fill(px(i)))
@@ -242,5 +286,29 @@ mod tests {
         assert_eq!(fraction_of(0.0, -12.0, 12.0), 0.5);
         assert_eq!(value_at(0.25, -12.0, 12.0), -6.0);
         assert_eq!(fraction_of(200.0, 0.0, 100.0), 1.0);
+    }
+
+    /// scripts/make_mock_valeton.swift で描いた Valeton Suite 風の画面 (CoreGraphics の
+    /// なめらかな縁と、実物の大きさの文字が乗る)。
+    #[test]
+    fn reads_every_slider_on_the_mock_valeton_screen() {
+        let img = image::load_from_memory(include_bytes!("../tests/fixtures/mock_valeton.png"))
+            .unwrap()
+            .to_rgba8();
+        let values = [60.0, 50.0, 70.0, 50.0, 45.0, 65.0];
+        for (i, v) in values.iter().enumerate() {
+            let y = ((165.0 + 42.0 * i as f64 + 15.0) * 2.0) as u32;
+            // 塗りの上・トラックの上・名前の文字の上・値の文字の上
+            for x in [1100, 1700, 1000, 1850] {
+                let s = read(&img, x, y).unwrap_or_else(|e| panic!("{i} ({x}): {e}"));
+                assert!(
+                    (s.fraction() - v / 100.0).abs() < 0.005,
+                    "{i} ({x}): {} != {v}",
+                    s.fraction()
+                );
+                assert!((973..=976).contains(&s.left), "{i}: left {}", s.left);
+                assert!((1874..=1877).contains(&s.right), "{i}: right {}", s.right);
+            }
+        }
     }
 }

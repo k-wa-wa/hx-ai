@@ -4,6 +4,8 @@
 //!
 //! 入力の画面は scripts/make_mock_screenshot.swift で描いた HX Edit 風の模擬画面
 //! (1200×800 ポイント) である。数値欄の中心は x = 100 + 140 * i, y = 712 ポイントにある。
+//! GP-5 は scripts/make_mock_valeton.swift で描いた Valeton Suite 風の模擬画面
+//! (1000×773 ポイント) である。スライダーは x 487〜938、i 本目の縦は 165 + 42 * i から高さ 30。
 
 use crate::ai::{self, ActionKind, AiResponse, Purpose, RequestInput, RestoreTarget};
 use crate::config::{self, StoredSettings};
@@ -12,10 +14,11 @@ use crate::geometry::{MAX_SCREENSHOT_SIDE, fit_within};
 use crate::sound;
 
 const SCREENSHOT: &[u8] = include_bytes!("../tests/fixtures/mock_hx_edit.png");
+const VALETON: &[u8] = include_bytes!("../tests/fixtures/mock_valeton.png");
 
 /// アプリと同じく、長辺を `MAX_SCREENSHOT_SIDE` に縮めたスクリーンショット。
-fn screenshot() -> (Vec<u8>, (u32, u32)) {
-    let image = image::load_from_memory(SCREENSHOT).unwrap();
+fn screenshot(original: &[u8]) -> (Vec<u8>, (u32, u32)) {
+    let image = image::load_from_memory(original).unwrap();
     let (w, h) = fit_within(image.width(), image.height(), MAX_SCREENSHOT_SIDE);
     let resized = image.resize_exact(w, h, image::imageops::FilterType::Triangle);
     let mut png = Vec::new();
@@ -53,15 +56,25 @@ fn bright_tone_wav() -> Vec<u8> {
 }
 
 async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
+    ask_on(Device::HxStomp, SCREENSHOT, purpose, recording).await
+}
+
+async fn ask_on(
+    device: Device,
+    original: &[u8],
+    purpose: Purpose<'_>,
+    recording: Option<&[u8]>,
+) -> AiResponse {
     let _ = dotenvy::dotenv();
-    let settings = StoredSettings::default()
+    let mut settings = StoredSettings::default()
         .resolve(&config::process_env)
         .expect("OPENAI_API_KEY が必要");
-    let (png, size) = screenshot();
+    settings.device = device;
+    let (png, size) = screenshot(original);
     let body = ai::build_request(
         &settings.model,
         &RequestInput {
-            device: Device::HxStomp,
+            device,
             purpose,
             history: &[],
             reference_audio: None,
@@ -188,5 +201,37 @@ async fn ai_live_recommends_a_model_from_the_catalog() {
             .any(|m| resp.explanation.contains(m)),
         "一覧のモデル名を勧めていない: {}",
         resp.explanation
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn ai_live_gp5_points_at_the_treble_slider_with_its_range() {
+    let wav = bright_tone_wav();
+    let purpose = Purpose::Adjust {
+        instruction: "高音が耳に痛い。AMP の Treble だけを少し下げて",
+    };
+    let resp = ask_on(Device::Gp5, VALETON, purpose.clone(), Some(&wav)).await;
+    ai::validate(&resp, &purpose, false, Device::Gp5).expect("検証");
+    let treble = resp
+        .actions
+        .iter()
+        .find(|a| a.kind == ActionKind::SetValue && a.parameter.to_lowercase().contains("treble"))
+        .expect("Treble の変更が無い");
+    assert_eq!(treble.previous_value.trim(), "65", "変更前の値の読み取り");
+    assert_eq!((treble.min, treble.max), (Some(0.0), Some(100.0)), "範囲");
+    assert!(treble.value.trim().parse::<f64>().unwrap() < 65.0);
+    // Treble のバー (x 487〜938、y 375〜405 ポイント) の上を指しているか
+    let (x, y) = (treble.x / 1000.0 * 1000.0, treble.y / 1000.0 * 773.0);
+    assert!((487.0..=938.0).contains(&x), "x {x}");
+    assert!((375.0..=405.0).contains(&y), "y {y}");
+    // その点で画素を読むと、アプリの安全確認 (塗りの位置と変更前の値) を通る
+    let img = image::load_from_memory(VALETON).unwrap().to_rgba8();
+    let s =
+        crate::slider::read(&img, (x * 2.0) as u32, (y * 2.0) as u32).expect("スライダーを読む");
+    assert!(
+        (s.fraction() - 0.65).abs() <= crate::automation::PREVIOUS_TOLERANCE,
+        "{}",
+        s.fraction()
     );
 }
