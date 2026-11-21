@@ -384,13 +384,14 @@ mod tests {
     #[test]
     fn a_two_pixel_blend_at_the_fill_edge_does_not_cut_the_bar() {
         let mut img = image_with(0.5);
+        // 塗りでもトラックでもない中間色が 2 画素続く
         for y in 80..120 {
-            img.put_pixel(500, y, Rgba([48, 80, 140, 255]));
-            img.put_pixel(501, y, Rgba([42, 60, 95, 255]));
+            img.put_pixel(500, y, Rgba([45, 62, 100, 255]));
+            img.put_pixel(501, y, Rgba([42, 55, 80, 255]));
         }
         let s = read(&img, 300, 85).unwrap();
         assert_eq!((s.left, s.right), (100, 900));
-        assert_eq!(s.fill_end, 501, "中間色のうち青いものは塗り");
+        assert_eq!(s.fill_end, 500);
     }
 
     #[test]

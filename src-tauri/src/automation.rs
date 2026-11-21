@@ -287,9 +287,13 @@ fn drag_slider(
     // ドラッグと認識されるまでの遊びなどで、動かした量より塗りが動かないことがある。
     // 前のドラッグで足りなかった量 (画像のピクセル) を覚えておき、次はその分だけ多めに動かす
     let mut lost = 0.0;
-    for attempt in 0..MAX_DRAGS {
+    // 合ったかの確認を 1 か所にするため、最後のドラッグの後の確認の分だけ 1 回多く回す
+    for attempt in 0..=MAX_DRAGS {
         if (s.fraction() - goal).abs() <= SLIDER_TOLERANCE {
             return Ok(mouse);
+        }
+        if attempt == MAX_DRAGS {
+            break;
         }
         if attempt > 0 {
             geometry::ensure_mouse_untouched(mouse, desktop.mouse_location()?)?;
@@ -312,9 +316,6 @@ fn drag_slider(
             (start - end, start - goal_x)
         };
         lost = (wanted + lost - moved).clamp(0.0, MAX_LOST * (s.right - s.left) as f64);
-    }
-    if (s.fraction() - goal).abs() <= SLIDER_TOLERANCE {
-        return Ok(mouse);
     }
     Err(format!(
         "{name}: {MAX_DRAGS} 回ドラッグしても {target} に合わせられませんでした (今はおよそ {:.1})",
@@ -1199,6 +1200,8 @@ mod gp5_tests {
         let (mut d, w) = offset_desktop(0.15, DragModel::Relative { slop: 60.0 });
         execute(&mut d, Device::Gp5, &[slide("15", "45")], &w);
         assert_eq!(drag_ends(&d, 1), (Ev::Move(743, 205), Ev::Move(848, 205)));
+        // 2 回目も 90 しか動かず、足りなかった分は 120 → 上限の 90 のまま 3 回目に足す
+        assert_eq!(drag_ends(&d, 2), (Ev::Move(788, 205), Ev::Move(848, 205)));
     }
 
     #[test]
