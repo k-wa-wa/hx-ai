@@ -104,6 +104,17 @@ pub fn screen_windows() -> Result<Vec<ScreenWindow>, String> {
     Ok(out)
 }
 
+/// ウィンドウをそのままの解像度で撮る (縮めない)。スライダーの値を画素で読むのに使う。
+pub fn capture_image(window_id: u32) -> Result<image::RgbaImage, String> {
+    let window = all_windows()?
+        .into_iter()
+        .find(|w| w.id().ok() == Some(window_id))
+        .ok_or_else(|| "撮ろうとしたウィンドウが見つかりません".to_string())?;
+    window.capture_image().map_err(|e| {
+        format!("ウィンドウをキャプチャできません (画面収録の権限を確かめてください): {e}")
+    })
+}
+
 pub fn capture(app_name: &str) -> Result<Screenshot, String> {
     let target = find_target_window(app_name)?;
     let window = all_windows()?

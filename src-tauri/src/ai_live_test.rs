@@ -7,6 +7,7 @@
 
 use crate::ai::{self, ActionKind, AiResponse, Purpose, RequestInput, RestoreTarget};
 use crate::config::{self, StoredSettings};
+use crate::device::Device;
 use crate::geometry::{MAX_SCREENSHOT_SIDE, fit_within};
 use crate::sound;
 
@@ -60,6 +61,7 @@ async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
     let body = ai::build_request(
         &settings.model,
         &RequestInput {
+            device: Device::HxStomp,
             purpose,
             history: &[],
             reference_audio: None,
@@ -98,7 +100,7 @@ async fn ai_live_adjust_reads_treble_field() {
         instruction: "高音が耳に痛い。アンプの Treble だけを少し下げて",
     };
     let resp = ask(purpose.clone(), Some(&wav)).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
+    ai::validate(&resp, &purpose, false, Device::HxStomp).expect("検証");
     let treble = resp
         .actions
         .iter()
@@ -128,7 +130,7 @@ async fn ai_live_revert_types_previous_value() {
     }];
     let purpose = Purpose::Revert { targets: &targets };
     let resp = ask(purpose.clone(), None).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
+    ai::validate(&resp, &purpose, false, Device::HxStomp).expect("検証");
     let set: Vec<_> = resp
         .actions
         .iter()
@@ -153,7 +155,7 @@ async fn ai_live_selects_hidden_block() {
         instruction: "ディレイの Mix を少し上げて。アンプは触らないで",
     };
     let resp = ask(purpose.clone(), Some(&wav)).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
+    ai::validate(&resp, &purpose, false, Device::HxStomp).expect("検証");
     let last = resp.actions.last().expect("操作が無い");
     assert_eq!(
         last.kind,
@@ -178,7 +180,7 @@ async fn ai_live_recommends_a_model_from_the_catalog() {
         instruction: "歪みを Bluesbreaker 系 (BB 系) のオーバードライブに変えたい。どのモデルがよいか教えて。値は変えなくてよい",
     };
     let resp = ask(purpose.clone(), Some(&wav)).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
+    ai::validate(&resp, &purpose, false, Device::HxStomp).expect("検証");
     // 一覧で Bluesbreaker 系に分類した HX Stomp のモデル
     assert!(
         ["Heir Apparent", "Tone Sovereign"]

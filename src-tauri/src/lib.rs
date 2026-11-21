@@ -12,6 +12,7 @@ mod device;
 mod geometry;
 mod macos;
 mod permission;
+mod slider;
 mod sound;
 mod workflow;
 #[cfg(test)]

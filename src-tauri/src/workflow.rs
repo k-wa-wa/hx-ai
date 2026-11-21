@@ -18,6 +18,7 @@ use crate::audio;
 use crate::automation::{self, Outcome};
 use crate::capture::{self, Screenshot, TargetWindow};
 use crate::config::{self, ResolvedSettings, StoredSettings};
+use crate::device::Device;
 use crate::macos;
 use crate::permission;
 use crate::sound::{self, MAX_RECORD_SECONDS, Prepared, ReferenceClip, ReferenceTrack};
@@ -227,6 +228,8 @@ pub struct LoopIteration {
 /// サイクルが外の世界に対して行うこと。
 #[allow(async_fn_in_trait)]
 pub trait Engine {
+    /// 操作する機種 (AI への説明と、値の変え方が変わる)。
+    fn device(&self) -> Device;
     fn progress(&self, stage: &str, message: String);
     async fn capture(&mut self) -> Result<Screenshot, String>;
     async fn ask(&mut self, body: &Value) -> Result<AiResponse, String>;
@@ -277,6 +280,10 @@ struct TauriEngine {
 }
 
 impl Engine for TauriEngine {
+    fn device(&self) -> Device {
+        self.settings.device
+    }
+
     fn progress(&self, stage: &str, message: String) {
         emit_progress(&self.app, stage, message);
     }
@@ -299,9 +306,11 @@ impl Engine for TauriEngine {
         actions: Vec<AiAction>,
         window: TargetWindow,
     ) -> Result<Outcome, String> {
+        let device = self.settings.device;
         blocking(move || {
             Ok(automation::execute(
                 &mut macos::MacDesktop::default(),
+                device,
                 &actions,
                 &window,
             ))
@@ -378,6 +387,7 @@ async fn run_rounds<E: Engine>(
         let body = ai::build_request(
             model,
             &RequestInput {
+                device: engine.device(),
                 purpose: purpose.clone(),
                 history: input.history,
                 reference_audio: input.reference,
@@ -397,7 +407,7 @@ async fn run_rounds<E: Engine>(
                 .explanations
                 .push(resp.explanation.trim().to_string());
         }
-        ai::validate(&resp, purpose, round == MAX_ROUNDS)?;
+        ai::validate(&resp, purpose, round == MAX_ROUNDS, engine.device())?;
         report.goal_reached = resp.goal_reached;
 
         if resp.actions.is_empty() {
