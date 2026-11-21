@@ -169,3 +169,22 @@ async fn ai_live_selects_hidden_block() {
         DELAY_BLOCK
     );
 }
+
+#[tokio::test]
+#[ignore]
+async fn ai_live_recommends_a_model_from_the_catalog() {
+    let wav = bright_tone_wav();
+    let purpose = Purpose::Adjust {
+        instruction: "歪みを Bluesbreaker 系 (BB 系) のオーバードライブに変えたい。どのモデルがよいか教えて。値は変えなくてよい",
+    };
+    let resp = ask(purpose.clone(), Some(&wav)).await;
+    ai::validate(&resp, &purpose, false).expect("検証");
+    // 一覧で Bluesbreaker 系に分類した HX Stomp のモデル
+    assert!(
+        ["Heir Apparent", "Tone Sovereign"]
+            .iter()
+            .any(|m| resp.explanation.contains(m)),
+        "一覧のモデル名を勧めていない: {}",
+        resp.explanation
+    );
+}

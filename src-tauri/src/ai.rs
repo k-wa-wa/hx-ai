@@ -9,6 +9,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::catalog;
 use crate::config::ResolvedSettings;
 
 /// 1 回の応答で受け付ける値の変更の上限。これを超える応答は丸ごと捨てる。
@@ -21,6 +22,13 @@ pub const MAX_HISTORY_TURNS: usize = 8;
 pub const MAX_HISTORY_CHARS: usize = 400;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// 1 回の問い合わせで、エフェクト一覧を検索してよい回数。超えたら答えを返させる。
+pub const MAX_SEARCHES: usize = 3;
+/// エフェクト一覧を検索する関数の名前。
+pub const SEARCH_TOOL: &str = "search_effects";
+/// 答え (操作) を返す関数の名前。
+pub const SUBMIT_TOOL: &str = "submit_actions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,6 +187,11 @@ pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp を HX Edit (mac
 - 変えたいパラメータが画面に出ていないブロックにあるときは、いま見えているパラメータの set_value を先に並べ、最後に select_block を 1 つだけ置き、needs_another_round を true にする。アプリはそのブロックを選んでから撮り直し、もう一度あなたに聞く。
 - それ以外のときは needs_another_round を false にする。
 - 選び直した後は撮り直したスクリーンショットだけを渡し、音声は渡さない。select_block を返すときは、選んだ後に変える予定のパラメータと変える向きを explanation に書いておくこと。
+
+関数 (ツール):
+- search_effects: この機種のエフェクト一覧を category と query で検索する。別のモデルを勧めるとき、画面のモデルが何を元にしたものか確かめるときに使う。1 回の問い合わせで 3 回まで。
+- submit_actions: 答えを返す。最後に必ず 1 回呼ぶ。
+- モデルの切り替え (別のアンプやペダルに変えること) はアプリでは実行しない。勧めるときは search_effects で確かめた正確なモデル名を explanation に書き、手で切り替えるよう伝える。
 
 目標への到達:
 - 録音がユーザーの指示 (とリファレンス) に十分近く、これ以上変える必要が無いと判断したら goal_reached を true にし、actions を空にする。
@@ -346,14 +359,135 @@ pub fn build_request(model: &str, input: &RequestInput) -> Value {
     json!({
         "model": model,
         "messages": messages,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "hx_edit_actions",
-                "schema": response_schema()
+        "tools": tools(),
+        // 答えも関数で返させる (本文の JSON より形が崩れにくく、検索と同じ流れで扱える)
+        "tool_choice": "required"
+    })
+}
+
+/// AI に渡す関数: エフェクト一覧の検索と、答えの提出。
+pub fn tools() -> Value {
+    json!([
+        {
+            "type": "function",
+            "function": {
+                "name": SEARCH_TOOL,
+                "description": "この機種のエフェクト一覧を検索する。モデルを勧めるときや、画面のモデルが何を元にしたものか確かめるときに使う。category と query の少なくとも一方を指定する。結果は最大 15 件で、total が全件数である。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "category": { "type": "string", "enum": catalog::CATEGORIES },
+                        "query": {
+                            "type": "string",
+                            "description": "空白区切りのキーワード (すべてを含むものを返す)。モデル名・元にした機種・系統で引ける。例: \"BB\", \"TS\", \"Klon\", \"Marshall\", \"ファズ\""
+                        }
+                    }
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": SUBMIT_TOOL,
+                "description": "答え (説明と、アプリが実行する操作) を返す。最後に必ず 1 回呼ぶ。",
+                "parameters": response_schema()
             }
         }
+    ])
+}
+
+/// エフェクト一覧の検索の依頼 1 件。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchCall {
+    pub id: String,
+    pub category: Option<String>,
+    pub query: Option<String>,
+}
+
+/// AI の返事。答えか、検索の依頼か。
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reply {
+    Final(AiResponse),
+    /// `message` は AI の発言そのもので、会話に戻してから検索結果を続ける。
+    Searches {
+        message: Value,
+        calls: Vec<SearchCall>,
+    },
+}
+
+/// 関数の引数は JSON の文字列で届く (オブジェクトで返す実装もあるので両方受ける)。
+fn arguments(call: &Value) -> Result<Value, String> {
+    match call.pointer("/function/arguments") {
+        Some(Value::String(s)) => serde_json::from_str(strip_code_fence(s)).map_err(|e| {
+            format!(
+                "AI の関数呼び出しの引数を読めません: {e}: {}",
+                truncate(s, 300)
+            )
+        }),
+        Some(v @ Value::Object(_)) => Ok(v.clone()),
+        _ => Ok(json!({})),
+    }
+}
+
+/// Chat Completions の応答本文から、AI の返事 (答えか検索の依頼) を取り出す。
+pub fn parse_reply(body: &Value) -> Result<Reply, String> {
+    let message = body.pointer("/choices/0/message").cloned();
+    let calls = message
+        .as_ref()
+        .and_then(|m| m.get("tool_calls"))
+        .and_then(Value::as_array)
+        .filter(|c| !c.is_empty());
+    let Some(calls) = calls else {
+        // 関数を使わず本文に JSON を書く相手にも対応する
+        return parse_response(body).map(Reply::Final);
+    };
+    let name = |c: &Value| {
+        c.pointer("/function/name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    if let Some(submit) = calls.iter().find(|c| name(c) == SUBMIT_TOOL) {
+        let args = arguments(submit)?;
+        return serde_json::from_value(args.clone())
+            .map(Reply::Final)
+            .map_err(|e| {
+                format!(
+                    "AI の答えの形が違います: {e}: {}",
+                    truncate(&args.to_string(), 500)
+                )
+            });
+    }
+    let mut searches = Vec::new();
+    for c in calls {
+        let n = name(c);
+        if n != SEARCH_TOOL {
+            return Err(format!("AI が知らない関数を呼びました: {n}"));
+        }
+        let args = arguments(c)?;
+        let text = |k: &str| args.get(k).and_then(Value::as_str).map(str::to_string);
+        searches.push(SearchCall {
+            id: c
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            category: text("category"),
+            query: text("query"),
+        });
+    }
+    Ok(Reply::Searches {
+        message: message.unwrap_or(Value::Null),
+        calls: searches,
     })
+}
+
+/// 検索を実行し、AI に返す文字列にする。失敗も AI に伝えて、条件を直させる。
+pub fn run_search(device: crate::device::Device, call: &SearchCall) -> String {
+    match catalog::search(device, call.category.as_deref(), call.query.as_deref()) {
+        Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
+        Err(e) => json!({ "error": e }).to_string(),
+    }
 }
 
 /// モデルの出力がコードフェンスで囲まれていても JSON として読めるようにする。
@@ -485,14 +619,14 @@ pub fn is_retryable_status(status: u16) -> bool {
 /// 再試行するまでの待ち時間。要素の数が再試行の回数になる。
 pub(crate) const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(3), Duration::from_secs(8)];
 
-/// API を呼び出して応答を返す。混雑 (429 / 5xx) のときだけ待って再試行し、
-/// 最後まで通らなければ最後のエラーを返す。`on_retry` には画面に出す文言を渡す。
+/// API を呼び出して答えを返す。AI がエフェクト一覧を検索したら、結果を渡して問い合わせ直す。
+/// 混雑 (429 / 5xx) のときだけ待って再試行する。`on_progress` には画面に出す文言を渡す。
 pub async fn call(
     settings: &ResolvedSettings,
     body: &Value,
-    on_retry: &(dyn Fn(String) + Send + Sync),
+    on_progress: &(dyn Fn(String) + Send + Sync),
 ) -> Result<AiResponse, String> {
-    call_with_delays(settings, body, &RETRY_DELAYS, on_retry).await
+    call_with_delays(settings, body, &RETRY_DELAYS, on_progress).await
 }
 
 /// `call` の本体。テストでは待ち時間を 0 にして呼ぶ。
@@ -500,16 +634,66 @@ pub(crate) async fn call_with_delays(
     settings: &ResolvedSettings,
     body: &Value,
     retry_delays: &[Duration],
-    on_retry: &(dyn Fn(String) + Send + Sync),
+    on_progress: &(dyn Fn(String) + Send + Sync),
 ) -> Result<AiResponse, String> {
-    let url = format!(
-        "{}/chat/completions",
-        settings.api_base_url.trim_end_matches('/')
-    );
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|e| format!("HTTP クライアントを作れません: {e}"))?;
+    let mut body = body.clone();
+    let mut searches = 0;
+    loop {
+        let json = post(&client, settings, &body, retry_delays, on_progress).await?;
+        let (message, calls) = match parse_reply(&json)? {
+            Reply::Final(r) => return Ok(r),
+            Reply::Searches { message, calls } => (message, calls),
+        };
+        if searches >= MAX_SEARCHES {
+            return Err(format!(
+                "AI がエフェクト一覧の検索を {MAX_SEARCHES} 回より多く続け、答えを返しませんでした"
+            ));
+        }
+        let messages = body
+            .get_mut("messages")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| "リクエストに messages がありません".to_string())?;
+        messages.push(message);
+        for c in &calls {
+            searches += 1;
+            on_progress(format!(
+                "エフェクト一覧を検索中 ({})",
+                [c.category.as_deref(), c.query.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" / ")
+            ));
+            messages.push(json!({
+                "role": "tool",
+                "tool_call_id": c.id,
+                "content": run_search(settings.device, c)
+            }));
+        }
+        if searches >= MAX_SEARCHES {
+            // これ以上は検索させず、答えを返させる
+            body["tool_choice"] =
+                json!({ "type": "function", "function": { "name": SUBMIT_TOOL } });
+        }
+    }
+}
+
+/// 1 回の POST。混雑のときだけ待って再試行する。
+async fn post(
+    client: &reqwest::Client,
+    settings: &ResolvedSettings,
+    body: &Value,
+    retry_delays: &[Duration],
+    on_progress: &(dyn Fn(String) + Send + Sync),
+) -> Result<Value, String> {
+    let url = format!(
+        "{}/chat/completions",
+        settings.api_base_url.trim_end_matches('/')
+    );
     let mut attempt = 0;
     loop {
         let res = client
@@ -525,13 +709,12 @@ pub(crate) async fn call_with_delays(
             .await
             .map_err(|e| format!("AI API の応答を読めません: {}", error_chain(&e)))?;
         if status.is_success() {
-            let json: Value = serde_json::from_str(&text).map_err(|e| {
+            return serde_json::from_str(&text).map_err(|e| {
                 format!(
                     "AI API の応答が JSON ではありません: {e}: {}",
                     truncate(&text, 500)
                 )
-            })?;
-            return parse_response(&json);
+            });
         }
         let error = format!(
             "AI API がエラーを返しました (HTTP {status}): {}",
@@ -539,7 +722,7 @@ pub(crate) async fn call_with_delays(
         );
         match retry_delays.get(attempt) {
             Some(delay) if is_retryable_status(status.as_u16()) => {
-                on_retry(format!(
+                on_progress(format!(
                     "AI API が混雑しています (HTTP {}). {} 秒後に再試行します ({}/{})",
                     status.as_u16(),
                     delay.as_secs(),
@@ -635,12 +818,137 @@ mod tests {
     }
 
     #[test]
-    fn request_carries_the_schema() {
+    fn request_offers_search_and_submit_tools_and_requires_one() {
         let body = build_request("m", &input(ADJUST, &[]));
+        assert_eq!(body["tool_choice"], "required");
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools[0]["function"]["name"], "search_effects");
         assert_eq!(
-            body["response_format"]["json_schema"]["schema"],
-            response_schema()
+            tools[0]["function"]["parameters"]["properties"]["category"]["enum"],
+            json!(catalog::CATEGORIES)
         );
+        assert_eq!(tools[1]["function"]["name"], "submit_actions");
+        assert_eq!(tools[1]["function"]["parameters"], response_schema());
+        assert!(body.get("response_format").is_none());
+    }
+
+    fn tool_call(id: &str, name: &str, args: Value) -> Value {
+        json!({ "id": id, "type": "function", "function": { "name": name, "arguments": args.to_string() } })
+    }
+
+    fn reply(calls: Vec<Value>) -> Value {
+        json!({ "choices": [{ "message": { "role": "assistant", "content": null, "tool_calls": calls } }] })
+    }
+
+    fn final_args() -> Value {
+        json!({ "explanation": "x", "actions": [], "needs_another_round": false, "goal_reached": true })
+    }
+
+    #[test]
+    fn parse_reply_reads_submitted_answer() {
+        let r = parse_reply(&reply(vec![tool_call("1", SUBMIT_TOOL, final_args())])).unwrap();
+        let Reply::Final(r) = r else { panic!("{r:?}") };
+        assert!(r.goal_reached);
+        // 引数がオブジェクトのまま届いても読む
+        let obj = json!({ "choices": [{ "message": { "tool_calls": [
+            { "id": "1", "function": { "name": SUBMIT_TOOL, "arguments": final_args() } }
+        ] } }] });
+        assert!(matches!(parse_reply(&obj).unwrap(), Reply::Final(_)));
+    }
+
+    #[test]
+    fn parse_reply_collects_searches_with_the_original_message() {
+        let body = reply(vec![
+            tool_call(
+                "a",
+                SEARCH_TOOL,
+                json!({ "category": "drive", "query": "BB" }),
+            ),
+            tool_call("b", SEARCH_TOOL, json!({ "query": "Klon" })),
+        ]);
+        let Reply::Searches { message, calls } = parse_reply(&body).unwrap() else {
+            panic!()
+        };
+        assert_eq!(message, body["choices"][0]["message"]);
+        assert_eq!(
+            calls,
+            vec![
+                SearchCall {
+                    id: "a".into(),
+                    category: Some("drive".into()),
+                    query: Some("BB".into())
+                },
+                SearchCall {
+                    id: "b".into(),
+                    category: None,
+                    query: Some("Klon".into())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn submit_wins_over_searches_in_the_same_reply() {
+        let body = reply(vec![
+            tool_call("a", SEARCH_TOOL, json!({ "query": "BB" })),
+            tool_call("b", SUBMIT_TOOL, final_args()),
+        ]);
+        assert!(matches!(parse_reply(&body).unwrap(), Reply::Final(_)));
+    }
+
+    #[test]
+    fn parse_reply_rejects_unknown_functions_and_bad_arguments() {
+        let unknown = reply(vec![tool_call("a", "delete_everything", json!({}))]);
+        assert!(
+            parse_reply(&unknown)
+                .unwrap_err()
+                .contains("delete_everything")
+        );
+        let bad = json!({ "choices": [{ "message": { "tool_calls": [
+            { "id": "1", "function": { "name": SUBMIT_TOOL, "arguments": "{not json" } }
+        ] } }] });
+        assert!(parse_reply(&bad).unwrap_err().contains("引数を読めません"));
+        let wrong_shape = reply(vec![tool_call(
+            "1",
+            SUBMIT_TOOL,
+            json!({ "explanation": "x" }),
+        )]);
+        assert!(
+            parse_reply(&wrong_shape)
+                .unwrap_err()
+                .contains("形が違います")
+        );
+    }
+
+    #[test]
+    fn parse_reply_falls_back_to_json_content() {
+        let content = final_args().to_string();
+        let body = json!({ "choices": [{ "message": { "content": content } }] });
+        assert!(matches!(parse_reply(&body).unwrap(), Reply::Final(_)));
+    }
+
+    #[test]
+    fn search_results_and_errors_are_passed_back_as_json() {
+        let ok = run_search(
+            crate::device::Device::Gp5,
+            &SearchCall {
+                id: "a".into(),
+                category: Some("drive".into()),
+                query: Some("TS".into()),
+            },
+        );
+        let v: Value = serde_json::from_str(&ok).unwrap();
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["models"][0]["name"], "Green OD");
+        let err = run_search(
+            crate::device::Device::Gp5,
+            &SearchCall {
+                id: "a".into(),
+                category: Some("fuzzbox".into()),
+                query: None,
+            },
+        );
+        assert!(err.contains("不明なカテゴリ"), "{err}");
     }
 
     #[test]
@@ -826,7 +1134,6 @@ mod tests {
     fn build_request_contains_all_media_in_order() {
         let body = build_request("gemini-3.8-flash", &input(ADJUST, &[]));
         assert_eq!(body["model"], "gemini-3.8-flash");
-        assert_eq!(body["response_format"]["type"], "json_schema");
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "system");
         let content = messages.last().unwrap()["content"].as_array().unwrap();
@@ -987,6 +1294,14 @@ mod tests {
         assert!(text(false, true).contains("リファレンスは無い"));
         assert!(text(true, false).contains("現在の音は録音されていない"));
         assert!(text(false, false).contains("音声は無い"));
+    }
+
+    #[test]
+    fn system_prompt_explains_the_tools_and_their_limit() {
+        assert!(SYSTEM_PROMPT.contains(SEARCH_TOOL));
+        assert!(SYSTEM_PROMPT.contains(SUBMIT_TOOL));
+        assert!(SYSTEM_PROMPT.contains(&format!("{MAX_SEARCHES} 回まで")));
+        assert!(SYSTEM_PROMPT.contains("モデルの切り替え"));
     }
 
     #[test]

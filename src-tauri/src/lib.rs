@@ -6,6 +6,7 @@ mod ai_live_test;
 mod audio;
 mod automation;
 mod capture;
+mod catalog;
 mod config;
 mod device;
 mod geometry;

@@ -1,0 +1,3387 @@
+{
+ "device": "hx_stomp",
+ "source": "Line 6 HX Stomp 3.80 Owner's Manual (Rev D) のモデル表 (Legacy Cab と Mic は除く)",
+ "tags_note": "tags は based_on と種類から規則で付けた分類で、マニュアルの記載ではない",
+ "models": [
+  {
+   "name": "Kinky Boost",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Xotic EP Booster",
+   "tags": [
+    "ブースター"
+   ]
+  },
+  {
+   "name": "Deranged Master",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Dallas Rangemaster Treble Booster",
+   "tags": [
+    "ブースター"
+   ]
+  },
+  {
+   "name": "Minotaur",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Klon Centaur",
+   "tags": [
+    "オーバードライブ",
+    "Klon系",
+    "ケンタウロス系"
+   ]
+  },
+  {
+   "name": "Teemah!",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Paul Cochrane Timmy Overdrive",
+   "tags": [
+    "オーバードライブ",
+    "Timmy系",
+    "透明系"
+   ]
+  },
+  {
+   "name": "Heir Apparent",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Analogman Prince of Tone",
+   "tags": [
+    "オーバードライブ",
+    "BB系",
+    "Bluesbreaker系 (Marshall Bluesbreaker の回路)",
+    "KOT系"
+   ]
+  },
+  {
+   "name": "Tone Sovereign",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Analogman King of Tone",
+   "tags": [
+    "オーバードライブ",
+    "BB系",
+    "Bluesbreaker系 (Marshall Bluesbreaker の回路)",
+    "KOT系"
+   ]
+  },
+  {
+   "name": "Alpaca Rogue",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Way Huge Red Llama (modded)",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Compulsive Drive",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Fulltone OCD",
+   "tags": [
+    "オーバードライブ",
+    "OCD系"
+   ]
+  },
+  {
+   "name": "Dhyana Drive",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Hermida Zendrive",
+   "tags": [
+    "オーバードライブ",
+    "Dumble系"
+   ]
+  },
+  {
+   "name": "Horizon Drive",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Horizon Precision Drive",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Valve Driver",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Chandler Tube Driver",
+   "tags": [
+    "オーバードライブ",
+    "Tube Driver系"
+   ]
+  },
+  {
+   "name": "Top Secret OD",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "DOD OD-250",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Prize Drive",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Nobels ODR-1(bc)",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Scream 808",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Ibanez TS808 Tube Screamer",
+   "tags": [
+    "オーバードライブ",
+    "TS系",
+    "Tube Screamer"
+   ]
+  },
+  {
+   "name": "Pillars",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Earthquaker Devices Plumes",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Hedgehog D9",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "MAXON SD9 Sonic Distortion",
+   "tags": [
+    "ディストーション"
+   ]
+  },
+  {
+   "name": "Stupor OD",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS SD-1 Overdrive",
+   "tags": [
+    "オーバードライブ",
+    "SD-1系"
+   ]
+  },
+  {
+   "name": "Deez One Vintage",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS DS-1 Distortion (Made-in-Japan)",
+   "tags": [
+    "ディストーション",
+    "DS-1系"
+   ]
+  },
+  {
+   "name": "Deez One Mod",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS DS-1 Distortion (Keeley modded)",
+   "tags": [
+    "ディストーション",
+    "DS-1系"
+   ]
+  },
+  {
+   "name": "Ratatoullie Dist",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Pro Co RAT (with LM308 opamp)",
+   "tags": [
+    "ディストーション",
+    "RAT系"
+   ]
+  },
+  {
+   "name": "Vermin Dist",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Pro Co RAT",
+   "tags": [
+    "ディストーション",
+    "RAT系"
+   ]
+  },
+  {
+   "name": "Vital Dist",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Earthquaker Devices Life - Octave/Distortion circuit",
+   "tags": [
+    "ディストーション"
+   ]
+  },
+  {
+   "name": "Vital Boost",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Earthquaker Devices Life - Boost circuit",
+   "tags": [
+    "ブースター"
+   ]
+  },
+  {
+   "name": "KWB",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Benadrian Kowloon Walled Bunny Distortion",
+   "tags": [
+    "ディストーション"
+   ]
+  },
+  {
+   "name": "Legendary Drive",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Carvin VLD1 Legacy Drive (hi gain channel)",
+   "tags": [
+    "ディストーション"
+   ]
+  },
+  {
+   "name": "Swedish Chainsaw",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS HM-2 Heavy Metal Distortion (MIJ)",
+   "tags": [
+    "ディストーション",
+    "メタル系ディストーション"
+   ]
+  },
+  {
+   "name": "Arbitrator Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Arbiter Fuzz Face",
+   "tags": [
+    "ファズ",
+    "Fuzz Face系"
+   ]
+  },
+  {
+   "name": "Pocket Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Jordan Boss Tone Fuzz",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Bighorn Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "‘73 Electro-Harmonix Ram’s Head Big Muff Pi",
+   "tags": [
+    "ファズ",
+    "Big Muff系"
+   ]
+  },
+  {
+   "name": "Triangle Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Electro-Harmonix Big Muff Pi",
+   "tags": [
+    "ファズ",
+    "Big Muff系"
+   ]
+  },
+  {
+   "name": "Dark Dove Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Electro-Harmonix Russian Big Muff Pi",
+   "tags": [
+    "ファズ",
+    "Big Muff系"
+   ]
+  },
+  {
+   "name": "Ballistic Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Euthymia ICBM Fuzz",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Industrial Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Z.Vex Fuzz Factory",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Tycoctavia Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Tycobrahe Octavia",
+   "tags": [
+    "ファズ",
+    "オクターブファズ"
+   ]
+  },
+  {
+   "name": "Wringer Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Garbage’s modded BOSS FZ-2",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Thrifter Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Xenomorph Fuzz",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Subdecay Harmonic Antagonizer",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Megaphone",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Megaphone",
+   "tags": [
+    "ディストーション"
+   ]
+  },
+  {
+   "name": "Bitcrusher",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "ディストーション"
+   ]
+  },
+  {
+   "name": "Ampeg Scrambler",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Ampeg Scrambler Bass Overdrive",
+   "tags": [
+    "ベース用"
+   ]
+  },
+  {
+   "name": "ZeroAmp Bass DI",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Tech 21 SansAmp Bass Driver DI V1",
+   "tags": [
+    "ベース用"
+   ]
+  },
+  {
+   "name": "Regal Bass DI",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Noble Preamp Bass DI",
+   "tags": [
+    "ベース用"
+   ]
+  },
+  {
+   "name": "Tube Drive",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Chandler Tube Driver",
+   "tags": [
+    "オーバードライブ",
+    "Tube Driver系"
+   ]
+  },
+  {
+   "name": "Screamer",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Ibanez Tube Screamer",
+   "tags": [
+    "オーバードライブ",
+    "TS系",
+    "Tube Screamer"
+   ]
+  },
+  {
+   "name": "Clawthorn Drive",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Wounded Paw Battering Ram",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Overdrive",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "DOD Overdrive/Preamp 250",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Classic Dist",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Pro Co RAT",
+   "tags": [
+    "ディストーション",
+    "RAT系"
+   ]
+  },
+  {
+   "name": "Heavy Dist",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "BOSS Metal Zone",
+   "tags": [
+    "ディストーション",
+    "メタル系ディストーション"
+   ]
+  },
+  {
+   "name": "Colordrive",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Colorsound Overdriver",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "Buzz Saw",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Maestro Fuzz Tone",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Facial Fuzz",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Arbiter Fuzz Face",
+   "tags": [
+    "ファズ",
+    "Fuzz Face系"
+   ]
+  },
+  {
+   "name": "Jumbo Fuzz",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Vox Tone Bender",
+   "tags": [
+    "ファズ",
+    "Tone Bender系"
+   ]
+  },
+  {
+   "name": "Fuzz Pi",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Electro-Harmonix Big Muff Pi",
+   "tags": [
+    "ファズ",
+    "Big Muff系"
+   ]
+  },
+  {
+   "name": "Jet Fuzz",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Roland Jet Phaser",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "L6 Drive",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Colorsound Overdriver (modded)",
+   "tags": [
+    "オーバードライブ"
+   ]
+  },
+  {
+   "name": "L6 Distortion",
+   "category": "drive",
+   "type": "Legacy",
+   "note": "Line 6 Original",
+   "tags": [
+    "ディストーション"
+   ]
+  },
+  {
+   "name": "Sub Oct Fuzz",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "PAiA Roctave Divider",
+   "tags": [
+    "ファズ",
+    "オクターブファズ"
+   ]
+  },
+  {
+   "name": "Octave Fuzz",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Tycobrahe Octavia",
+   "tags": [
+    "ファズ",
+    "オクターブファズ"
+   ]
+  },
+  {
+   "name": "Bronze Master",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "Maestro Bass Brassmaster",
+   "tags": [
+    "ファズ"
+   ]
+  },
+  {
+   "name": "Killer Z",
+   "category": "drive",
+   "type": "Legacy",
+   "based_on": "BOSS Metal Zone MT-2",
+   "tags": [
+    "ディストーション",
+    "メタル系ディストーション"
+   ]
+  },
+  {
+   "name": "Kinky Comp",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "based_on": "Xotic SP Compressor",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Ampeg Opto Comp",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "based_on": "Ampeg Opto Comp Compressor",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Rochester Comp",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "based_on": "Ashly CLX-52 (in conjunction w/ B. Sheehan)",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "LA Studio Comp",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "based_on": "Teletronix LA-2A",
+   "tags": [
+    "コンプレッサー",
+    "LA-2A系"
+   ]
+  },
+  {
+   "name": "3-Band Comp",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Noise Gate",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "ノイズゲート"
+   ]
+  },
+  {
+   "name": "Hard Gate",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "ノイズゲート"
+   ]
+  },
+  {
+   "name": "Deluxe Comp",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Red Squeeze",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "based_on": "MXR Dyna Comp",
+   "tags": [
+    "コンプレッサー",
+    "Dyna Comp系"
+   ]
+  },
+  {
+   "name": "Autoswell",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "ダイナミクス"
+   ]
+  },
+  {
+   "name": "Feedbacker",
+   "category": "dynamics",
+   "type": "Mono",
+   "note": "Line 6 Original, Feedback Generator",
+   "tags": [
+    "ダイナミクス"
+   ]
+  },
+  {
+   "name": "Tube Comp",
+   "category": "dynamics",
+   "type": "Legacy",
+   "based_on": "Teletronix LA-2A",
+   "tags": [
+    "コンプレッサー",
+    "LA-2A系"
+   ]
+  },
+  {
+   "name": "Red Comp",
+   "category": "dynamics",
+   "type": "Legacy",
+   "based_on": "MXR Dyna Comp",
+   "tags": [
+    "コンプレッサー",
+    "Dyna Comp系"
+   ]
+  },
+  {
+   "name": "Blue Comp",
+   "category": "dynamics",
+   "type": "Legacy",
+   "based_on": "BOSS CS-1",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Blue Comp Treb",
+   "category": "dynamics",
+   "type": "Legacy",
+   "based_on": "BOSS CS-1 (Treble switch on)",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Vetta Comp",
+   "category": "dynamics",
+   "type": "Legacy",
+   "note": "Line 6 Original",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Vetta Juice",
+   "category": "dynamics",
+   "type": "Legacy",
+   "note": "Line 6 Original",
+   "tags": [
+    "コンプレッサー"
+   ]
+  },
+  {
+   "name": "Boost Comp",
+   "category": "dynamics",
+   "type": "Legacy",
+   "based_on": "MXR Micro Amp",
+   "tags": [
+    "コンプレッサー",
+    "ブースター"
+   ]
+  },
+  {
+   "name": "Simple EQ",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Low and High Cut",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Low/High Shelf",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Parametric",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Tilt",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "10 Band Graphic",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "based_on": "MXR 10-Band Graphic EQ"
+  },
+  {
+   "name": "Cali Q Graphic",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "based_on": "MESA/Boogie Mark IV Graphic EQ"
+  },
+  {
+   "name": "Acoustic Sim",
+   "category": "eq",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Optical Trem",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Fender optical tremolo circuit",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "60s Bias Trem",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Vox AC-15 Tremolo",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "Tremolo/Autopan",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS PN-2",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "Harmonic Tremolo",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "Bleat Chop Trem",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Lightfoot Labs Goatkeeper",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "Script Mod Phase",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "MXR Phase 90",
+   "tags": [
+    "フェイザー",
+    "Phase 90系"
+   ]
+  },
+  {
+   "name": "Pebble Phaser",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Electro-Harmonix Small Stone",
+   "tags": [
+    "フェイザー"
+   ]
+  },
+  {
+   "name": "Ubiquitous Vibe",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Shin-ei Uni-Vibe",
+   "tags": [
+    "フェイザー",
+    "Uni-Vibe系"
+   ]
+  },
+  {
+   "name": "FlexoVibe",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "フェイザー"
+   ]
+  },
+  {
+   "name": "Deluxe Phaser",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "フェイザー"
+   ]
+  },
+  {
+   "name": "Gray Flanger",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "MXR 117 Flanger",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "Harmonic Flanger",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "A/DA Flanger",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "Courtesan Flange",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Electro-Harmonix Deluxe EM",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "Dynamix Flanger",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "Chorus",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "70s Chorus",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS CE-1",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "PlastiChorus",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Modded Arion SCH-Z chorus",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "Ampeg Liquifier Chorus",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Ampeg Liquifier Chorus",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "Trinity Chorus",
+   "category": "modulation",
+   "type": "Stereo",
+   "based_on": "Dytronics Tri-Stereo Chorus",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "4-Voice Chorus",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "Bubble Vibrato",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS VB-2 Vibrato",
+   "tags": [
+    "ビブラート"
+   ]
+  },
+  {
+   "name": "Vibe Rotary",
+   "category": "modulation",
+   "type": "Stereo",
+   "based_on": "Fender Vibratone",
+   "tags": [
+    "ロータリー"
+   ]
+  },
+  {
+   "name": "122 Rotary",
+   "category": "modulation",
+   "type": "Stereo",
+   "based_on": "Leslie 122",
+   "tags": [
+    "ロータリー"
+   ]
+  },
+  {
+   "name": "145 Rotary",
+   "category": "modulation",
+   "type": "Stereo",
+   "based_on": "Leslie 145",
+   "tags": [
+    "ロータリー"
+   ]
+  },
+  {
+   "name": "Triple Rotary",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "based_on": "Yamaha RA-200",
+   "tags": [
+    "ロータリー"
+   ]
+  },
+  {
+   "name": "Retro Reel",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Double Take",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "Poly Detune",
+   "category": "modulation",
+   "type": "Mono",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "AM Ring Mod",
+   "category": "modulation",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "リングモジュレーター"
+   ]
+  },
+  {
+   "name": "Pitch Ring Mod",
+   "category": "modulation",
+   "type": "Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "リングモジュレーター"
+   ]
+  },
+  {
+   "name": "Pattern Tremolo",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "Panner",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original",
+   "tags": [
+    "オートパン"
+   ]
+  },
+  {
+   "name": "Bias Tremolo",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "1960 Vox AC-15 Tremolo",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "Opto Tremolo",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "1964 Fender Deluxe Reverb",
+   "tags": [
+    "トレモロ"
+   ]
+  },
+  {
+   "name": "Script Phase",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "MXR Phase 90 (script logo version)",
+   "tags": [
+    "フェイザー",
+    "Phase 90系"
+   ]
+  },
+  {
+   "name": "Panned Phaser",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "Ibanez Flying Pan",
+   "tags": [
+    "フェイザー"
+   ]
+  },
+  {
+   "name": "Barberpole",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original",
+   "tags": [
+    "フェイザー"
+   ]
+  },
+  {
+   "name": "Dual Phaser",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "Mu-Tron Bi-Phase",
+   "tags": [
+    "フェイザー"
+   ]
+  },
+  {
+   "name": "U-Vibe",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "Shin-ei Uni-Vibe",
+   "tags": [
+    "フェイザー",
+    "Uni-Vibe系"
+   ]
+  },
+  {
+   "name": "Phaser",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "MXR Phase 90",
+   "tags": [
+    "フェイザー",
+    "Phase 90系"
+   ]
+  },
+  {
+   "name": "Pitch Vibrato",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "BOSS VB-2",
+   "tags": [
+    "ビブラート"
+   ]
+  },
+  {
+   "name": "Dimension",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "Roland Dimension D",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "Analog Chorus",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "BOSS CE-1",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "Tri Chorus",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "Dytronics Tri-Stereo Chorus",
+   "tags": [
+    "コーラス"
+   ]
+  },
+  {
+   "name": "Analog Flanger",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "MXR Flanger",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "Jet Flanger",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "A/DA Flanger",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "AC Flanger",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "MXR Flanger",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "80A Flanger",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "A/DA Flanger",
+   "tags": [
+    "フランジャー"
+   ]
+  },
+  {
+   "name": "Frequency Shift",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ring Modulator",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original",
+   "tags": [
+    "リングモジュレーター"
+   ]
+  },
+  {
+   "name": "Rotary Drum",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "Fender Vibratone",
+   "tags": [
+    "ロータリー"
+   ]
+  },
+  {
+   "name": "Rotary Drum/Horn",
+   "category": "modulation",
+   "type": "Legacy",
+   "based_on": "Leslie 145",
+   "tags": [
+    "ロータリー"
+   ]
+  },
+  {
+   "name": "Tape Eater",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Warble-Matic",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Random S&H",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Sweeper",
+   "category": "modulation",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Simple Delay",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Mod/Chorus Echo",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dual Delay",
+   "category": "delay",
+   "type": "Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Multitap 4",
+   "category": "delay",
+   "type": "Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Multitap 6",
+   "category": "delay",
+   "type": "Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ping Pong",
+   "category": "delay",
+   "type": "Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Sweep Echo",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ducked Delay",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "based_on": "TC Electronic 2290"
+  },
+  {
+   "name": "Reverse Delay",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Vintage Digital",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Vintage Swell",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Pitch Echo",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Transistor Tape",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "based_on": "Maestro Echoplex EP-3"
+  },
+  {
+   "name": "Cosmos Echo",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "based_on": "Roland RE-201 Space Echo"
+  },
+  {
+   "name": "Harmony Delay",
+   "category": "delay",
+   "type": "Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Bucket Brigade",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS DM-2"
+  },
+  {
+   "name": "Adriatic Delay",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "based_on": "BOSS DM-2 w/ Adrian Mod"
+  },
+  {
+   "name": "Adriatic Swell",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Elephant Man",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "based_on": "Electro-Harmonix Deluxe Memory Man"
+  },
+  {
+   "name": "Multi Pass",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Heliosphere",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Poly Sustain",
+   "category": "delay",
+   "type": "Mono",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Glitch Delay",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Euclidean Delay",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "ADT",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Crisscross",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Tesselator",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ratchet",
+   "category": "delay",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ping Pong",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "TC Electronic 2290"
+  },
+  {
+   "name": "Dynamic",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "TC Electronic 2290"
+  },
+  {
+   "name": "Stereo",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Digital",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dig w/Mod",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Reverse",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Lo Res",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Tube Echo",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "Maestro Echoplex EP-1"
+  },
+  {
+   "name": "Tape Echo",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "Maestro Echoplex EP-3"
+  },
+  {
+   "name": "Sweep Echo",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Echo Platter",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "Binson EchoRec"
+  },
+  {
+   "name": "Analog Echo",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "BOSS DM-2"
+  },
+  {
+   "name": "Analog w/Mod",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "Electro-Harmonix Deluxe Memory Man"
+  },
+  {
+   "name": "Auto-Volume Echo",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Multi-Head",
+   "category": "delay",
+   "type": "Legacy",
+   "based_on": "Roland RE-101 Space Echo"
+  },
+  {
+   "name": "Bubble Echo",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Phaze Eko",
+   "category": "delay",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dynamic Hall",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dynamic Plate",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dynamic Room",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dynamic Ambience",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dynamic Bloom",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Shimmer",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Hot Springs",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Nonlinear",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Glitz",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ganymede",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Searchlights",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Plateaux",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Double Tank",
+   "category": "reverb",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Plate",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Room",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Chamber",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Hall",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Echo",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Tile",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Cave",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ducking",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Octo",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "‘63 Spring",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Spring",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Particle Verb",
+   "category": "reverb",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Pitch Wham",
+   "category": "pitch",
+   "type": "Mono, Stereo",
+   "based_on": "Digitech Whammy"
+  },
+  {
+   "name": "Twin Harmony",
+   "category": "pitch",
+   "type": "Mono, Stereo",
+   "based_on": "Eventide H3000"
+  },
+  {
+   "name": "Simple Pitch",
+   "category": "pitch",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Dual Pitch",
+   "category": "pitch",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "3 OSC Synth",
+   "category": "pitch",
+   "type": "Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Poly Pitch",
+   "category": "pitch",
+   "type": "Mono",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Poly Wham",
+   "category": "pitch",
+   "type": "Mono",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Poly Capo",
+   "category": "pitch",
+   "type": "Mono",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "12 String",
+   "category": "pitch",
+   "type": "Mono",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "3 Note Generator ‡",
+   "category": "pitch",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "4 OSC Generator ‡",
+   "category": "pitch",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Bass Octaver",
+   "category": "pitch",
+   "type": "Legacy",
+   "based_on": "EBS OctaBass"
+  },
+  {
+   "name": "Smart Harmony",
+   "category": "pitch",
+   "type": "Legacy",
+   "based_on": "Eventide H3000"
+  },
+  {
+   "name": "Octi Synth",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Synth O Matic",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Attack Synth",
+   "category": "pitch",
+   "type": "Legacy",
+   "based_on": "Korg X911 Guitar Synth"
+  },
+  {
+   "name": "Synth String",
+   "category": "pitch",
+   "type": "Legacy",
+   "based_on": "Roland GR700 Guitar Synth"
+  },
+  {
+   "name": "Growler",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Buzz Wave",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Rez Synth",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Seismik Synth",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Analog Synth",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Synth Lead",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "String Theory",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Synth FX",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Saturn 5 Ring Mod",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Synth Harmony",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Double Bass",
+   "category": "pitch",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Mutant Filter",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Musitronics Mu-Tron III"
+  },
+  {
+   "name": "Mystery Filter",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Korg A3"
+  },
+  {
+   "name": "Autofilter",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Asheville Pattrn",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Moog Moogerfooger MF-105M MuRF Filter"
+  },
+  {
+   "name": "Voice Box",
+   "category": "filter",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "V Tron",
+   "category": "filter",
+   "type": "Legacy",
+   "based_on": "Musitronics Mu-Tron III"
+  },
+  {
+   "name": "Q Filter",
+   "category": "filter",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Seeker",
+   "category": "filter",
+   "type": "Legacy",
+   "based_on": "Z Vex Seek Wah"
+  },
+  {
+   "name": "Obi Wah",
+   "category": "filter",
+   "type": "Legacy",
+   "based_on": "Oberheim voltage-controlled S&H filter"
+  },
+  {
+   "name": "Tron Up",
+   "category": "filter",
+   "type": "Legacy",
+   "based_on": "Musitronics Mu-Tron III (up position)"
+  },
+  {
+   "name": "Tron Down",
+   "category": "filter",
+   "type": "Legacy",
+   "based_on": "Musitronics Mu-Tron III (down position)"
+  },
+  {
+   "name": "Throbber",
+   "category": "filter",
+   "type": "Legacy",
+   "based_on": "Electrix Filter Factory"
+  },
+  {
+   "name": "Slow Filter",
+   "category": "filter",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Spin Cycle",
+   "category": "filter",
+   "type": "Legacy",
+   "based_on": "Craig Anderton’s Wah/Anti-Wah"
+  },
+  {
+   "name": "Comet Trails",
+   "category": "filter",
+   "type": "Legacy",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "UK Wah 846",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Vox V846",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Teardrop 310",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Dunlop Cry Baby Fasel model 310",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Fassel",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Dunlop Cry Baby Super",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Weeper",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Arbiter Cry Baby",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Chrome",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Vox V847",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Chrome Custom",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Modded Vox V847",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Throaty",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "RMC Real McCoy 1",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Vetta Wah",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "note": "Line 6 Original",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Colorful",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Colorsound Wah-fuzz",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Conductor",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Maestro Boomerang",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "Teardrop Bass Q",
+   "category": "filter",
+   "type": "Mono, Stereo",
+   "based_on": "Modified Dunlop 105Q",
+   "tags": [
+    "ワウ"
+   ]
+  },
+  {
+   "name": "WhoWatt 100",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Hiwatt DR-103 Brill",
+   "tags": [
+    "Hiwatt系"
+   ]
+  },
+  {
+   "name": "Soup Pro",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Supro S6616"
+  },
+  {
+   "name": "Stone Age 185",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Gibson EH-185"
+  },
+  {
+   "name": "Voltage Queen",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Victoria Vintage Queen"
+  },
+  {
+   "name": "Tweed Blues Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Bassman (normal channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "Tweed Blues Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Bassman (bright channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "Fullerton Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender 5C3 Tweed Deluxe (normal channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "Fullerton Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender 5C3 Tweed Deluxe (bright channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "Fullerton Jump",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender 5C3 Tweed Deluxe (jumped channels)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "GrammaticoLG Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Grammatico LaGrange (normal channel)"
+  },
+  {
+   "name": "GrammaticoLG Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Grammatico LaGrange (bright channel)"
+  },
+  {
+   "name": "GrammaticoLG Jmp",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Grammatico LaGrange (jumped channels)"
+  },
+  {
+   "name": "US Small Tweed",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Champ",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "US Princess",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Princeton Reverb",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "US Super Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Super Reverb (normal channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "US Super Vib",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Super Reverb (vibrato channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "US Deluxe Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Deluxe Reverb (normal channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "US Deluxe Vib",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Deluxe Reverb (vibrato channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "US Double Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Twin Reverb (normal channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "US Double Vib",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Fender Twin Reverb (vibrato channel)",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "Mail Order Twin",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Silvertone 1484"
+  },
+  {
+   "name": "Divided Duo",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "÷13 JRT 9/15"
+  },
+  {
+   "name": "Interstate Zed",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Dr Z Route 66",
+   "tags": [
+    "Dr. Z系"
+   ]
+  },
+  {
+   "name": "Derailed Ingrid",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Trainwreck Circuits Express"
+  },
+  {
+   "name": "Grammatico GSG",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Grammatico GSG100"
+  },
+  {
+   "name": "Jazz Rivet 120",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Roland JC-120 Jazz Chorus",
+   "tags": [
+    "JC系"
+   ]
+  },
+  {
+   "name": "Essex A15",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Vox AC-15",
+   "tags": [
+    "Vox系"
+   ]
+  },
+  {
+   "name": "Essex A30",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Vox AC-30 with top boost",
+   "tags": [
+    "Vox系"
+   ]
+  },
+  {
+   "name": "A30 Fawn Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Vox AC-30 Fawn (normal channel)",
+   "tags": [
+    "Vox系"
+   ]
+  },
+  {
+   "name": "A30 Fawn Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Vox AC-30 Fawn (bright channel)",
+   "tags": [
+    "Vox系"
+   ]
+  },
+  {
+   "name": "Matchstick Ch1",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Matchless DC30 (channel 1)",
+   "tags": [
+    "Matchless系"
+   ]
+  },
+  {
+   "name": "Matchstick Ch2",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Matchless DC30 (channel 2)",
+   "tags": [
+    "Matchless系"
+   ]
+  },
+  {
+   "name": "Matchstick Jump",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Matchless DC30 (jumped)",
+   "tags": [
+    "Matchless系"
+   ]
+  },
+  {
+   "name": "Mandarin 80",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Orange OR80",
+   "tags": [
+    "Orange系"
+   ]
+  },
+  {
+   "name": "Mandarin Rocker",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Orange Rockerverb 100 MkIII (dirty channel)",
+   "tags": [
+    "Orange系"
+   ]
+  },
+  {
+   "name": "MOO)))N T Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Sunn Model T (normal channel)"
+  },
+  {
+   "name": "MOO)))N T Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Sunn Model T (brite channel)"
+  },
+  {
+   "name": "MOO)))N T Jump",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Sunn Model T (jumped channels)"
+  },
+  {
+   "name": "Brit J45 Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall JTM-45 (normal channel)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit J45 Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall JTM-45 (bright channel)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit Trem Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall JTM-50 (normal channel)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit Trem Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall JTM-50 (bright channel)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit Trem Jump",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall JTM-50 (jumped)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit Plexi Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall Super Lead 100 (normal channel)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit Plexi Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall Super Lead 100 (bright channel)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit Plexi Jump",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall Super Lead 100 (jumped)",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit P75 Nrm",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Park 75 (normal channel)"
+  },
+  {
+   "name": "Brit P75 Brt",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Park 75 (bright channel)"
+  },
+  {
+   "name": "Brit 2203",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall JCM-800, 100W, 2203",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Brit 2204",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Marshall JCM-800, 50W, 2204",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "Placater Clean",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Friedman BE-100 (clean channel)",
+   "tags": [
+    "Friedman系"
+   ]
+  },
+  {
+   "name": "Placater Dirty",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Friedman BE-100 (BE/HBE channel)",
+   "tags": [
+    "Friedman系"
+   ]
+  },
+  {
+   "name": "Cartographer",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Ben Adrian Cartographer"
+  },
+  {
+   "name": "German Xtra Blue",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Bogner Ecstacy 101B, EL34 (blue channel)",
+   "tags": [
+    "Bogner系"
+   ]
+  },
+  {
+   "name": "German Xtra Red",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Bogner Ecstacy 101B, EL34 (red channel)",
+   "tags": [
+    "Bogner系"
+   ]
+  },
+  {
+   "name": "German Mahadeva",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "BognerShiva",
+   "tags": [
+    "Bogner系"
+   ]
+  },
+  {
+   "name": "German Ubersonic",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Bogner Überschall",
+   "tags": [
+    "Bogner系"
+   ]
+  },
+  {
+   "name": "Cali Texas Ch1",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "MESA/Boogie Lone Star (clean channel)",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Cali Texas Ch2",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "MESA/Boogie Lone Star (drive channel)",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Cali IV Rhythm 1",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "MESA/Boogie Mark IV (channel I)",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Cali IV Rhythm 2",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "MESA/Boogie Mark IV (channel II)",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Cali IV Lead",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "MESA/Boogie Mark IV (lead channel)",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Cali Rectifire",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "MESA/Boogie Dual Rectifier",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Archetype Clean",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Paul Reed Smith Archon (clean channel)"
+  },
+  {
+   "name": "Archetype Lead",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Paul Reed Smith Archon (lead channel)"
+  },
+  {
+   "name": "ANGL Meteor",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "ENGL Fireball 100",
+   "tags": [
+    "ENGL系"
+   ]
+  },
+  {
+   "name": "Solo Lead Clean",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Soldano SLO-100 (clean channel)",
+   "tags": [
+    "Soldano系"
+   ]
+  },
+  {
+   "name": "Solo Lead Crunch",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Soldano SLO-100 (crunch channel)",
+   "tags": [
+    "Soldano系"
+   ]
+  },
+  {
+   "name": "Solo Lead OD",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Soldano SLO-100 (overdrive channel)",
+   "tags": [
+    "Soldano系"
+   ]
+  },
+  {
+   "name": "EV Panama Blue",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "EVH 5150III 100, 6L6 (blue channel)",
+   "tags": [
+    "5150系"
+   ]
+  },
+  {
+   "name": "EV Panama Red",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "EVH 5150III 100, 6L6 (red channel)",
+   "tags": [
+    "5150系"
+   ]
+  },
+  {
+   "name": "PV Panama",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Peavey 5150",
+   "tags": [
+    "5150系"
+   ]
+  },
+  {
+   "name": "PV Vitriol Clean",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Peavey Invective (clean channel)",
+   "tags": [
+    "5150系"
+   ]
+  },
+  {
+   "name": "PV Vitriol Crunch",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Peavey Invective (crunch channel)",
+   "tags": [
+    "5150系"
+   ]
+  },
+  {
+   "name": "PV Vitriol Lead",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Peavey Invective (lead channel)",
+   "tags": [
+    "5150系"
+   ]
+  },
+  {
+   "name": "Revv Gen Purple",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Revv Generator 120 (purple/gain ch. 3)"
+  },
+  {
+   "name": "Revv Gen Red",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Revv Generator 120 (red/high gain ch. 4)"
+  },
+  {
+   "name": "Das Benzin Mega",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Diezel VH4 (mega channel)",
+   "tags": [
+    "Diezel系"
+   ]
+  },
+  {
+   "name": "Das Benzin Lead",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "based_on": "Diezel VH4 (lead channel)",
+   "tags": [
+    "Diezel系"
+   ]
+  },
+  {
+   "name": "Line 6 Clarity",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Aristocrat",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Carillon",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Voltage",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Kinetic",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Oblivion",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Ventoux",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Elmsley",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Elektrik",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Doom",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Epic",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 2204 Mod",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Fatality",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Litigator",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Line 6 Badonk",
+   "category": "amp",
+   "type": "Guitar Amp",
+   "note": "Line 6 Original"
+  },
+  {
+   "name": "Ampeg B-15NF",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Ampeg B-15NF Portaflex",
+   "tags": [
+    "ベースアンプ",
+    "Ampeg系"
+   ]
+  },
+  {
+   "name": "Ampeg SVT Nrm",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Ampeg SVT (normal channel)",
+   "tags": [
+    "ベースアンプ",
+    "Ampeg系"
+   ]
+  },
+  {
+   "name": "Ampeg SVT Brt",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Ampeg SVT (bright channel)",
+   "tags": [
+    "ベースアンプ",
+    "Ampeg系"
+   ]
+  },
+  {
+   "name": "Ampeg SVT-4 PRO",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Ampeg SVT--4 PRO",
+   "tags": [
+    "ベースアンプ",
+    "Ampeg系"
+   ]
+  },
+  {
+   "name": "US Dripman Nrm",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Fender Bassman (Silverface)",
+   "tags": [
+    "ベースアンプ",
+    "Fender系"
+   ]
+  },
+  {
+   "name": "Woody Blue",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Acoustic 360",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Agua Sledge",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Aguilar Tone Hammer",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Agua 51",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Aguilar DB51",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Mandarin",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "200 Bass Orange AD200 MkIII",
+   "tags": [
+    "ベースアンプ",
+    "Orange系"
+   ]
+  },
+  {
+   "name": "Cali",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Bass MESA/Boogie M9 Carbine",
+   "tags": [
+    "ベースアンプ",
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Cali 400 Ch1",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "MESA/Boogie Bass 400+ (channel 1)",
+   "tags": [
+    "ベースアンプ",
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "Cali 400 Ch2",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "MESA/Boogie Bass 400+ (channel 2)",
+   "tags": [
+    "ベースアンプ",
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "G Cougar 800",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Gallien-Krueger GK 800RB",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Del Sol 300",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Sunn Coliseum 300",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Busy One Ch1",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Pearce BC-1 preamp (channel 1)",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Busy One Ch2",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Pearce BC-1 preamp (channel 2)",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Busy One Jump",
+   "category": "amp",
+   "type": "Bass Amp",
+   "based_on": "Pearce BC-1 preamp (jumped)",
+   "tags": [
+    "ベースアンプ"
+   ]
+  },
+  {
+   "name": "Studio Tube Pre",
+   "category": "amp",
+   "type": "Mic Preamp",
+   "based_on": "Requisite Y7 mic preamp"
+  },
+  {
+   "name": "studio microphone preamp within the",
+   "category": "amp",
+   "type": "Mic Preamp",
+   "based_on": "category."
+  },
+  {
+   "name": "Soup Pro Ellipse",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x6×9\" Supro, S6616"
+  },
+  {
+   "name": "1x8 Small Tweed",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1×8\" Fender Champ",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "1x10 US Princess",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x10\" Fender Princeton Reverb",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "1x12 Fullerton",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1×12\" Fender 5C3 Tweed Deluxe",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "1x12 Grammatico",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" Grammatico LaGrange"
+  },
+  {
+   "name": "1x12 US Deluxe",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" Fender Deluxe, Oxford",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "1x12 Open Cast",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" Custom open-back, EVM12L"
+  },
+  {
+   "name": "1x12 Open Cream",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" Custom open-back, G12M-65"
+  },
+  {
+   "name": "1x12 Cali EXT",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" MESA/Boogie Extension, EVM12L",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "1x12 Cali IV",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" MESA/Boogie MkIV Combo",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "1x12 Blue Bell",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" Vox AC-15, Blue Alnico",
+   "tags": [
+    "Vox系"
+   ]
+  },
+  {
+   "name": "2x12 Blue Bell",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Vox AC-30 Fawn, Blue Alnico",
+   "tags": [
+    "Vox系"
+   ]
+  },
+  {
+   "name": "2x12 Silver Bell",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Vox AC-30TB, Silver Alnico",
+   "tags": [
+    "Vox系"
+   ]
+  },
+  {
+   "name": "2x12 Match H30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Matchless DC30, Custom G12H-30",
+   "tags": [
+    "Matchless系"
+   ]
+  },
+  {
+   "name": "2x12 Match G25",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Matchless DC30, Custom G12M-35",
+   "tags": [
+    "Matchless系"
+   ]
+  },
+  {
+   "name": "2x12 Double C12N",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Fender Twin, C12N",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "2x12 Interstate",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Dr. Z Z Best, V30",
+   "tags": [
+    "Dr. Z系"
+   ]
+  },
+  {
+   "name": "2x12 Jazz Rivet",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Roland JC-120",
+   "tags": [
+    "JC系"
+   ]
+  },
+  {
+   "name": "2x12 Mail C12Q",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Silvertone 1484, Jensen C12Q"
+  },
+  {
+   "name": "2x12 Mandarin30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x12\" Orange, V30",
+   "tags": [
+    "Orange系"
+   ]
+  },
+  {
+   "name": "4x10 Tweed P10R",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x10\" Fender Bassman, P10R",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "4x10 US Super",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x10\" Fender Super Reverb, CTS alnico",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "4x12 WhoWatt",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Hiwatt AP Fane",
+   "tags": [
+    "Hiwatt系"
+   ]
+  },
+  {
+   "name": "4x12 Greenback20",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Marshall Basketweave G12M-20",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "4x12 Greenback25",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Marshall Basketweave G12M-25",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "4x12 Greenback30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Marshall Basketweave G12H-30",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "4x12 1960A T75",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Marshall 1960A, G12T-75",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "4x12 Blackback30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Park 75, G12H-30"
+  },
+  {
+   "name": "4x12 Brit V30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Marshall 1960AV, V30",
+   "tags": [
+    "Marshall系"
+   ]
+  },
+  {
+   "name": "4x12 Cali V30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" MESA/Boogie 4FB, V30",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "4x12 Mandarin EM",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Orange, Eminence",
+   "tags": [
+    "Orange系"
+   ]
+  },
+  {
+   "name": "4x12 MOO)))N T75",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Sunn, G12T-75"
+  },
+  {
+   "name": "4x12 Cartog Guv",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Modified Lee Jackson, Eminence Governor"
+  },
+  {
+   "name": "4x12 Cartog C90",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Modified Lee Jackson, Mesa C90",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "4x12 Uber T75",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Bogner Uberkab, G12T-75",
+   "tags": [
+    "Bogner系"
+   ]
+  },
+  {
+   "name": "4x12 Uber V30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Bogner Uberkab, V30",
+   "tags": [
+    "Bogner系"
+   ]
+  },
+  {
+   "name": "4x12 XXL V30",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" ENGL XXL, V30",
+   "tags": [
+    "ENGL系"
+   ]
+  },
+  {
+   "name": "4x12 SoloLead EM",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x12\" Soldano, Eminence 12-5875",
+   "tags": [
+    "Soldano系"
+   ]
+  },
+  {
+   "name": "1x12 Epicenter",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x12\" Epifani Ultralight"
+  },
+  {
+   "name": "1x15 Ampeg B-15",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "1x15\" Ampeg B-15",
+   "tags": [
+    "Ampeg系"
+   ]
+  },
+  {
+   "name": "2x15 Brute",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x15\" MESA/Boogie, EV",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "2x15 US Dripman",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "2x15” Fender Bassman, JBL D130",
+   "tags": [
+    "Fender系"
+   ]
+  },
+  {
+   "name": "4x10 Garden",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x10\" Eden D410XLT"
+  },
+  {
+   "name": "4x10 Ampeg Pro",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "4x10\" Ampeg PR-410HLF",
+   "tags": [
+    "Ampeg系"
+   ]
+  },
+  {
+   "name": "6x10 Cali Power",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "6x10” MESA/Boogie PowerHouse",
+   "tags": [
+    "Mesa系"
+   ]
+  },
+  {
+   "name": "8x10 SVT AV",
+   "category": "cab",
+   "type": "Cab (IR)",
+   "based_on": "8x10\" Ampeg SVT-810AV",
+   "tags": [
+    "Ampeg系"
+   ]
+  },
+  {
+   "name": "Horizon Gate",
+   "category": "dynamics",
+   "type": "Mono, Stereo",
+   "based_on": "Horizon Precision Drive - Gate Circuit",
+   "tags": [
+    "ノイズゲート"
+   ]
+  },
+  {
+   "name": "Obsidian 7000",
+   "category": "drive",
+   "type": "Mono, Stereo",
+   "based_on": "Darkglass Electronics Microtubes B7K Ultra",
+   "tags": [
+    "ベース用"
+   ]
+  },
+  {
+   "name": "Boctaver",
+   "category": "pitch",
+   "type": "Mono, Stereo",
+   "based_on": "Boss OC-2 Octaver"
+  }
+ ]
+}
