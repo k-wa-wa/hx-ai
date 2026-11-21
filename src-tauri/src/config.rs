@@ -8,14 +8,17 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::device::Device;
+
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai/";
 pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
-pub const DEFAULT_TARGET_APP: &str = "HX Edit";
 
 /// settings.json に保存する内容。空文字は「未設定」として環境変数・既定値に任せる。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct StoredSettings {
+    /// 機種 ("hx_stomp" / "gp5")。空なら HX Stomp。
+    pub device: String,
     pub api_base_url: String,
     pub api_key: String,
     pub model: String,
@@ -25,6 +28,7 @@ pub struct StoredSettings {
 /// 実際に使う値。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedSettings {
+    pub device: Device,
     pub api_base_url: String,
     pub api_key: String,
     pub model: String,
@@ -35,6 +39,7 @@ pub struct ResolvedSettings {
 #[derive(Debug, Clone, Serialize)]
 pub struct SettingsView {
     pub stored: StoredSettingsView,
+    pub device: Device,
     pub effective_base_url: String,
     pub effective_model: String,
     pub effective_target_app: String,
@@ -44,6 +49,7 @@ pub struct SettingsView {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StoredSettingsView {
+    pub device: String,
     pub api_base_url: String,
     pub model: String,
     pub target_app: String,
@@ -80,20 +86,23 @@ fn pick(stored: &str, env: EnvLookup, env_key: &str) -> Option<String> {
 
 impl StoredSettings {
     pub fn resolve(&self, env: EnvLookup) -> Result<ResolvedSettings, String> {
+        let device = Device::parse(&self.device)?;
         let api_key = pick(&self.api_key, env, "OPENAI_API_KEY")
             .ok_or_else(|| "API キーがありません。設定 (⚙︎) で入力してください".to_string())?;
         Ok(ResolvedSettings {
+            device,
             api_base_url: pick(&self.api_base_url, env, "OPENAI_BASE_URL")
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             api_key,
             model: pick(&self.model, env, "OPENAI_MODEL")
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             target_app: pick(&self.target_app, env, "HX_TARGET_APP")
-                .unwrap_or_else(|| DEFAULT_TARGET_APP.to_string()),
+                .unwrap_or_else(|| device.default_target_app().to_string()),
         })
     }
 
-    pub fn view(&self, env: EnvLookup) -> SettingsView {
+    pub fn view(&self, env: EnvLookup) -> Result<SettingsView, String> {
+        let device = Device::parse(&self.device)?;
         let api_key_source = if non_empty(&self.api_key).is_some() {
             "settings"
         } else if env("OPENAI_API_KEY").and_then(|v| non_empty(&v)).is_some() {
@@ -101,21 +110,23 @@ impl StoredSettings {
         } else {
             "missing"
         };
-        SettingsView {
+        Ok(SettingsView {
             stored: StoredSettingsView {
+                device: self.device.clone(),
                 api_base_url: self.api_base_url.clone(),
                 model: self.model.clone(),
                 target_app: self.target_app.clone(),
                 has_api_key: non_empty(&self.api_key).is_some(),
             },
+            device,
             effective_base_url: pick(&self.api_base_url, env, "OPENAI_BASE_URL")
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             effective_model: pick(&self.model, env, "OPENAI_MODEL")
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
             effective_target_app: pick(&self.target_app, env, "HX_TARGET_APP")
-                .unwrap_or_else(|| DEFAULT_TARGET_APP.to_string()),
+                .unwrap_or_else(|| device.default_target_app().to_string()),
             api_key_source: api_key_source.to_string(),
-        }
+        })
     }
 }
 
@@ -176,7 +187,7 @@ mod tests {
         assert_eq!(r.api_key, "ui-key");
         assert_eq!(r.model, "ui-model");
         assert_eq!(r.api_base_url, DEFAULT_BASE_URL);
-        assert_eq!(r.target_app, DEFAULT_TARGET_APP);
+        assert_eq!(r.target_app, "HX Edit");
     }
 
     #[test]
@@ -193,7 +204,7 @@ mod tests {
         assert_eq!(r.api_key, "env-key");
         assert_eq!(r.api_base_url, "http://localhost:9999/v1/");
         assert_eq!(r.model, DEFAULT_MODEL);
-        assert_eq!(s.view(&env).api_key_source, "env");
+        assert_eq!(s.view(&env).unwrap().api_key_source, "env");
     }
 
     #[test]
@@ -202,9 +213,45 @@ mod tests {
         let err = StoredSettings::default().resolve(&env).unwrap_err();
         assert!(err.contains("設定 (⚙︎) で入力"), "{err}");
         assert_eq!(
-            StoredSettings::default().view(&env).api_key_source,
+            StoredSettings::default().view(&env).unwrap().api_key_source,
             "missing"
         );
+    }
+
+    #[test]
+    fn device_decides_the_default_target_app() {
+        let env = env_with(&[("OPENAI_API_KEY", "k")]);
+        let hx = StoredSettings::default().resolve(&env).unwrap();
+        assert_eq!(hx.device, Device::HxStomp, "空なら HX Stomp");
+        assert_eq!(hx.target_app, "HX Edit");
+        let gp5 = StoredSettings {
+            device: "gp5".into(),
+            ..Default::default()
+        };
+        assert_eq!(gp5.resolve(&env).unwrap().target_app, "Valeton Suite");
+        assert_eq!(
+            gp5.view(&env).unwrap().effective_target_app,
+            "Valeton Suite"
+        );
+        assert_eq!(gp5.view(&env).unwrap().device, Device::Gp5);
+        // アプリ名を自分で入れていればそちらを使う
+        let custom = StoredSettings {
+            device: "gp5".into(),
+            target_app: "Valeton Suite 2".into(),
+            ..Default::default()
+        };
+        assert_eq!(custom.resolve(&env).unwrap().target_app, "Valeton Suite 2");
+    }
+
+    #[test]
+    fn unknown_device_is_an_error() {
+        let env = env_with(&[("OPENAI_API_KEY", "k")]);
+        let s = StoredSettings {
+            device: "gp200".into(),
+            ..Default::default()
+        };
+        assert!(s.resolve(&env).unwrap_err().contains("不明な機種"));
+        assert!(s.view(&env).is_err());
     }
 
     #[test]

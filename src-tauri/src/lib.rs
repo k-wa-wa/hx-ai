@@ -7,6 +7,7 @@ mod audio;
 mod automation;
 mod capture;
 mod config;
+mod device;
 mod geometry;
 mod macos;
 mod permission;
@@ -25,6 +26,7 @@ use crate::workflow::{AppState, CycleReport, LoopSummary, RecordingInfo, Referen
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsInput {
+    device: String,
     api_base_url: String,
     /// None なら保存済みのキーを変えない。空文字なら消す。
     api_key: Option<String>,
@@ -60,11 +62,11 @@ impl From<&Reference> for ReferenceInfo {
 
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Result<SettingsView, String> {
-    Ok(state
+    state
         .stored
         .lock()
         .map_err(|e| e.to_string())?
-        .view(&config::app_env(config::USE_ENV)))
+        .view(&config::app_env(config::USE_ENV))
 }
 
 /// 設定ウィンドウを開く。開いていれば前に出す。
@@ -96,6 +98,8 @@ fn save_settings(
 ) -> Result<SettingsView, String> {
     let mut stored = state.stored.lock().map_err(|e| e.to_string())?;
     let next = StoredSettings {
+        // 知らない機種は保存しない
+        device: device::Device::parse(&input.device)?.id().to_string(),
         api_base_url: input.api_base_url.trim().to_string(),
         api_key: match input.api_key {
             Some(k) => k.trim().to_string(),
@@ -106,7 +110,7 @@ fn save_settings(
     };
     config::save(&state.settings_path, &next)?;
     *stored = next;
-    let view = stored.view(&config::app_env(config::USE_ENV));
+    let view = stored.view(&config::app_env(config::USE_ENV))?;
     let _ = app.emit("settings_changed", &view);
     Ok(view)
 }
@@ -132,7 +136,7 @@ fn grant_permission(kind: String) -> Result<(), String> {
 async fn find_target_window(state: State<'_, AppState>) -> Result<capture::TargetWindow, String> {
     let settings = state.stored.lock().map_err(|e| e.to_string())?.clone();
     let app_name = settings
-        .view(&config::app_env(config::USE_ENV))
+        .view(&config::app_env(config::USE_ENV))?
         .effective_target_app;
     tauri::async_runtime::spawn_blocking(move || capture::find_target_window(&app_name))
         .await

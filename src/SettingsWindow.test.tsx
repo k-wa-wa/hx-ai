@@ -71,7 +71,7 @@ describe("AI の設定", () => {
     await user.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(b.callsTo("save_settings")).toHaveLength(1));
     expect(b.callsTo("save_settings")[0]).toEqual({
-      input: { apiBaseUrl: "", apiKey: null, model: "other-model", targetApp: "" },
+      input: { device: "hx_stomp", apiBaseUrl: "", apiKey: null, model: "other-model", targetApp: "" },
     });
   });
 
@@ -94,6 +94,22 @@ describe("AI の設定", () => {
     await user.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(b.callsTo("save_settings")).toHaveLength(1));
     expect(b.callsTo("save_settings")[0]).toMatchObject({ input: { apiKey: "" } });
+  });
+
+  it("機種を選んで保存する", async () => {
+    const b = setupBackend({ save_settings: () => ({ ...SETTINGS, device: "gp5" }) });
+    const user = await renderSettings();
+    await user.selectOptions(screen.getByLabelText("機種"), "Valeton GP-5");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(b.callsTo("save_settings")).toHaveLength(1));
+    expect(b.callsTo("save_settings")[0]).toMatchObject({ input: { device: "gp5" } });
+    expect(screen.getByLabelText("機種")).toHaveValue("gp5");
+  });
+
+  it("保存してある機種を選んだ状態で開く", async () => {
+    setupBackend({ get_settings: () => ({ ...SETTINGS, device: "gp5" }) });
+    await renderSettings();
+    await waitFor(() => expect(screen.getByLabelText("機種")).toHaveValue("gp5"));
   });
 
   it("保存できなければエラーを出す", async () => {
