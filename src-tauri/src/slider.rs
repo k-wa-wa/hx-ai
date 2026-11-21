@@ -66,7 +66,8 @@ const EXTRA_ROWS: u32 = 8;
 /// 指した行と、その上下の行のうち両端が同じものを読み、塗りの端はいちばん右を採る。
 pub fn read(img: &RgbaImage, x: u32, y: u32) -> Result<Slider, String> {
     let base = read_row(img, x, y)?;
-    let rows = y.saturating_sub(EXTRA_ROWS)..=(y + EXTRA_ROWS).min(img.height() - 1);
+    // 画像の外の行は read_row がエラーにするので、範囲はそのままでよい
+    let rows = y.saturating_sub(EXTRA_ROWS)..=y + EXTRA_ROWS;
     let fill_end = rows
         .filter_map(|r| read_row(img, x, r).ok())
         .filter(|s| s.left == base.left && s.right == base.right)
@@ -310,5 +311,101 @@ mod tests {
                 assert!((1874..=1877).contains(&s.right), "{i}: right {}", s.right);
             }
         }
+    }
+
+    #[test]
+    fn fill_color_boundaries() {
+        let c = |r, g, b| is_fill(&Rgba([r, g, b, 255]));
+        assert!(c(0, 0, 120) && !c(0, 0, 119), "青の強さ");
+        assert!(c(69, 0, 120) && !c(70, 0, 120), "赤より 50 強い");
+        assert!(c(0, 94, 120) && !c(0, 95, 120), "緑より 25 強い");
+        assert!(c(59, 116, 230), "実物の塗り");
+        assert!(!c(38, 43, 54) && !c(236, 238, 242), "トラックと文字");
+        let t = |r, g, b| is_text(&Rgba([r, g, b, 255]));
+        assert!(t(150, 150, 150) && !t(149, 200, 200));
+        assert!(!t(150, 150, 255), "青い色は文字ではない");
+    }
+
+    /// 塗りの端 (x 260) に文字が重なり、`hidden` の行では端が見えない画像。
+    fn hidden_edge(hidden: std::ops::Range<u32>) -> RgbaImage {
+        let mut img = image_with(0.2);
+        for y in hidden {
+            for x in 240..300 {
+                img.put_pixel(x, y, TEXT);
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn edge_hidden_on_the_row_and_above_is_read_from_rows_below() {
+        let s = read(&hidden_edge(80..104), 500, 100).unwrap();
+        assert_eq!(s.fill_end, 260);
+    }
+
+    #[test]
+    fn edge_hidden_on_the_row_and_below_is_read_from_rows_above() {
+        let s = read(&hidden_edge(96..120), 500, 100).unwrap();
+        assert_eq!(s.fill_end, 260);
+    }
+
+    #[test]
+    fn rows_of_a_neighbouring_bar_are_not_mixed_in() {
+        // すぐ上に、左端は同じで長さの違う別のバーがある (塗りは 90%)
+        let mut img = canvas(1000, 200);
+        slider(&mut img, 100, 700, 60, 80, 0.9);
+        slider(&mut img, 100, 900, 80, 120, 0.2);
+        let s = read(&img, 500, 84).unwrap();
+        assert_eq!((s.right, s.fill_end), (900, 260));
+    }
+
+    #[test]
+    fn rows_below_the_image_are_ignored() {
+        let mut img = canvas(1000, 120);
+        slider(&mut img, 100, 900, 100, 120, 0.3);
+        assert_eq!(read(&img, 500, 119).unwrap().fill_end, 340);
+    }
+
+    #[test]
+    fn point_below_the_image_is_an_error() {
+        assert!(read(&image_with(0.5), 500, 200).is_err());
+    }
+
+    #[test]
+    fn fill_reaching_the_image_edge_is_an_error_not_a_crash() {
+        let mut img = canvas(1000, 200);
+        slider(&mut img, 100, 1000, 80, 120, 1.0);
+        assert!(read(&img, 500, 85).is_err());
+        let mut track = canvas(1000, 200);
+        slider(&mut track, 100, 1000, 80, 120, 0.1);
+        assert!(read(&track, 999, 85).is_err());
+    }
+
+    #[test]
+    fn a_two_pixel_blend_at_the_fill_edge_does_not_cut_the_bar() {
+        let mut img = image_with(0.5);
+        for y in 80..120 {
+            img.put_pixel(500, y, Rgba([48, 80, 140, 255]));
+            img.put_pixel(501, y, Rgba([42, 60, 95, 255]));
+        }
+        let s = read(&img, 300, 85).unwrap();
+        assert_eq!((s.left, s.right), (100, 900));
+        assert_eq!(s.fill_end, 501, "中間色のうち青いものは塗り");
+    }
+
+    #[test]
+    fn width_limits() {
+        let mut img = canvas(1000, 200);
+        slider(&mut img, 100, 100 + MIN_WIDTH, 80, 120, 0.5);
+        assert!(read(&img, 110, 85).is_ok(), "幅 40 は読む");
+        let mut img = canvas(1000, 200);
+        slider(&mut img, 100, 99 + MIN_WIDTH, 80, 120, 0.5);
+        assert!(read(&img, 110, 85).is_err(), "幅 39 は読まない");
+        let mut img = canvas(1000, 200);
+        slider(&mut img, 50, 950, 80, 120, 0.5);
+        assert!(read(&img, 500, 85).is_ok(), "画像の 9 割ちょうどは読む");
+        let mut img = canvas(1000, 200);
+        slider(&mut img, 49, 950, 80, 120, 0.5);
+        assert!(read(&img, 500, 85).is_err(), "9 割を超えるのはバーではない");
     }
 }

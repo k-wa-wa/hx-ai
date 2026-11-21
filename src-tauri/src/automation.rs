@@ -295,16 +295,23 @@ fn drag_slider(
             geometry::ensure_mouse_untouched(mouse, desktop.mouse_location()?)?;
         }
         let start = s.fill_end as f64;
-        let wanted = s.x_at(goal) - start;
-        let aim = start + wanted + lost * wanted.signum();
-        let from = (map.to_screen_x(start).round() as i32, y);
-        let to = (map.to_screen_x(aim).round() as i32, y);
+        let goal_x = s.x_at(goal);
+        let up = goal_x > start;
+        let aim = if up { goal_x + lost } else { goal_x - lost };
+        let from = map.to_screen_x(start).round() as i32;
+        let to = map.to_screen_x(aim).round() as i32;
         check_guards(desktop, window, p)?;
-        drag(desktop, from, to)?;
-        mouse = to;
+        drag(desktop, y, from, to)?;
+        mouse = (to, y);
         s = read_slider(desktop, window, p)?.0;
-        let moved = (s.fill_end as f64 - start) * wanted.signum();
-        lost = (wanted.abs() + lost - moved).clamp(0.0, MAX_LOST * (s.right - s.left) as f64);
+        // 動かした向きに測った、塗りが実際に動いた量と、動かしたかった量
+        let end = s.fill_end as f64;
+        let (moved, wanted) = if up {
+            (end - start, goal_x - start)
+        } else {
+            (start - end, start - goal_x)
+        };
+        lost = (wanted + lost - moved).clamp(0.0, MAX_LOST * (s.right - s.left) as f64);
     }
     if (s.fraction() - goal).abs() <= SLIDER_TOLERANCE {
         return Ok(mouse);
@@ -315,16 +322,14 @@ fn drag_slider(
     ))
 }
 
-/// 左ボタンを押したまま、`from` から `to` まで細かく分けて動かす。
-fn drag(desktop: &mut dyn Desktop, from: (i32, i32), to: (i32, i32)) -> Result<(), String> {
-    desktop.move_mouse(from.0, from.1)?;
+/// 高さ `y` で、左ボタンを押したまま x を `from` から `to` まで細かく分けて動かす。
+fn drag(desktop: &mut dyn Desktop, y: i32, from: i32, to: i32) -> Result<(), String> {
+    desktop.move_mouse(from, y)?;
     desktop.wait(AFTER_MOVE);
     desktop.press()?;
     desktop.wait(AFTER_PRESS);
     let result = (1..=DRAG_STEPS).try_for_each(|i| {
-        let x = from.0 + (to.0 - from.0) * i / DRAG_STEPS;
-        let y = from.1 + (to.1 - from.1) * i / DRAG_STEPS;
-        desktop.move_mouse(x, y)?;
+        desktop.move_mouse(from + (to - from) * i / DRAG_STEPS, y)?;
         desktop.wait(DRAG_STEP);
         Ok::<(), String>(())
     });
@@ -1128,6 +1133,72 @@ mod gp5_tests {
         let out = execute(&mut b, Device::Gp5, &[slide("15", "45")], &window());
         assert!(out.error.unwrap().contains("動かせません"));
         assert_eq!(b.0.events.last(), Some(&Ev::Release), "押したままにしない");
+    }
+
+    /// ウィンドウを (100, 50) にずらし、スライダーを x 600〜1050、y 190〜220 に置く。
+    fn offset_desktop(fraction: f64, model: DragModel) -> (FakeDesktop, TargetWindow) {
+        let rect = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 1000.0,
+            height: 1000.0,
+        };
+        let mut d = FakeDesktop::new();
+        d.world.rect = Some(rect);
+        d.world.sliders = vec![FakeSlider {
+            rect: Rect {
+                x: 600.0,
+                y: 190.0,
+                width: 450.0,
+                height: 30.0,
+            },
+            fraction,
+        }];
+        d.world.drag_model = model;
+        (d, TargetWindow { rect, ..window() })
+    }
+
+    /// n 回目 (0 始まり) のドラッグの始点と終点。
+    fn drag_ends(d: &FakeDesktop, n: usize) -> (Ev, Ev) {
+        let ev = d.input_events();
+        let press = ev
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| **e == Ev::Press)
+            .nth(n)
+            .unwrap()
+            .0;
+        let release = press + ev[press..].iter().position(|e| *e == Ev::Release).unwrap();
+        (ev[press - 1].clone(), ev[release - 1].clone())
+    }
+
+    #[test]
+    fn the_shortfall_of_a_drag_is_added_to_the_next_one() {
+        // 画像は 2 倍。塗りの端 1135 → 目標 1405 (ピクセル)。遊び 6 ポイントで 258 しか動かず、12 足りない
+        let (mut d, w) = offset_desktop(0.15, DragModel::Relative { slop: 6.0 });
+        let out = execute(&mut d, Device::Gp5, &[slide("15", "45")], &w);
+        assert_eq!(out.error, None);
+        assert_eq!(drag_ends(&d, 0), (Ev::Move(668, 205), Ev::Move(803, 205)));
+        // 2 回目は残り 12 に足りなかった 12 を足して 24 ピクセル (12 ポイント) 動かす
+        assert_eq!(drag_ends(&d, 1), (Ev::Move(797, 205), Ev::Move(809, 205)));
+        assert_eq!(drags(&d), 2);
+    }
+
+    #[test]
+    fn the_shortfall_is_added_in_the_direction_of_the_drag() {
+        let (mut d, w) = offset_desktop(0.8, DragModel::Relative { slop: 6.0 });
+        let out = execute(&mut d, Device::Gp5, &[slide("80", "50")], &w);
+        assert_eq!(out.error, None);
+        assert_eq!(drag_ends(&d, 0), (Ev::Move(960, 205), Ev::Move(825, 205)));
+        assert_eq!(drag_ends(&d, 1), (Ev::Move(831, 205), Ev::Move(819, 205)));
+    }
+
+    #[test]
+    fn the_shortfall_added_is_capped() {
+        // 遊びが大きい (60 ポイント)。足りなかった 120 ピクセルのうち、バーの幅の 1 割 (90) だけを足す
+        let (mut d, w) = offset_desktop(0.15, DragModel::Relative { slop: 60.0 });
+        execute(&mut d, Device::Gp5, &[slide("15", "45")], &w);
+        assert_eq!(drag_ends(&d, 1), (Ev::Move(743, 205), Ev::Move(848, 205)));
     }
 
     #[test]
