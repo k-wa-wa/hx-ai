@@ -9,6 +9,7 @@ mod capture;
 mod catalog;
 mod config;
 mod geometry;
+mod hx_device;
 mod macos;
 mod permission;
 mod preset;
