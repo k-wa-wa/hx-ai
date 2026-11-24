@@ -24,6 +24,8 @@ pub trait Ui {
     fn confirm(&mut self, path: &[usize]) -> Result<(), String>;
     /// 保存の画面で「フォルダへ移動」を開く (Cmd+Shift+G)。
     fn open_go_to_folder(&mut self) -> Result<(), String>;
+    /// HX Edit を最前面にする。
+    fn bring_to_front(&mut self) -> Result<(), String>;
     /// .hlx を HX Edit で開く。
     fn open_in_hx_edit(&mut self, file: &FsPath) -> Result<(), String>;
     fn file_exists(&self, file: &FsPath) -> bool;
@@ -78,6 +80,7 @@ fn press_menu(ui: &mut dyn Ui, item: &str) -> Result<bool, String> {
 
 /// 今のプリセットを HX Stomp のスロットに保存する。書き出しは保存済みの値になるので、先に保存する。
 pub fn save(ui: &mut dyn Ui) -> Result<(), String> {
+    ui.bring_to_front()?;
     press_menu(ui, "Save Preset")?;
     ui.wait(AFTER_SAVE);
     let root = ui.snapshot()?;
@@ -107,6 +110,8 @@ pub fn export(ui: &mut dyn Ui, dir: &FsPath, name: &str) -> Result<PathBuf, Stri
             file.display()
         ));
     }
+    // 実機では、HX Edit が最前面でないと書き出しの画面が開かなかった
+    ui.bring_to_front()?;
     let enabled = press_menu(ui, "Export Preset...")?;
     let opened = wait_for(
         ui,
@@ -234,6 +239,7 @@ pub fn import(ui: &mut dyn Ui, file: &FsPath) -> Result<(), String> {
             ax_tree::describe_dialogs(&root)
         ));
     }
+    ui.bring_to_front()?;
     ui.open_in_hx_edit(file)?;
     let yes: Path = wait_for(
         ui,
@@ -287,6 +293,8 @@ mod tests {
         alert_shows: Option<String>,
         /// .hlx を開いても確認が出ない。
         no_alert: bool,
+        /// HX Edit が最前面か。実機では、最前面でないと書き出しの画面が開かなかった。
+        front: bool,
         /// 保存するとダイアログが出る。
         save_opens_dialog: bool,
         /// 書き出しのメニューが、アクセシビリティでは押せないと出る (実機の保存の直後)。
@@ -308,6 +316,7 @@ mod tests {
                 go_to_ignored: false,
                 alert_shows: None,
                 no_alert: false,
+                front: false,
                 save_opens_dialog: false,
                 export_reported_disabled: false,
                 export_does_nothing: false,
@@ -357,7 +366,7 @@ mod tests {
             };
             self.log.push(format!("押す {label}"));
             match (n.role.as_str(), label.as_str()) {
-                ("AXMenuItem", "Export Preset...") if self.export_does_nothing => {}
+                ("AXMenuItem", "Export Preset...") if self.export_does_nothing || !self.front => {}
                 ("AXMenuItem", "Export Preset...") => {
                     self.panel = Some(Panel {
                         place: "Downloads".into(),
@@ -428,6 +437,11 @@ mod tests {
         fn file_exists(&self, file: &FsPath) -> bool {
             self.files.contains(file)
         }
+        fn bring_to_front(&mut self) -> Result<(), String> {
+            self.log.push("前面に出す".into());
+            self.front = true;
+            Ok(())
+        }
         fn wait(&mut self, _: Duration) {}
     }
 
@@ -442,7 +456,8 @@ mod tests {
         assert_eq!(
             hx.log,
             [
-                "押す Export Preset...".to_string(),
+                "前面に出す".to_string(),
+                "押す Export Preset...".into(),
                 "Cmd+Shift+G".into(),
                 format!("入れる PathTextField = {DIR}"),
                 "確定 PathTextField".into(),
@@ -490,7 +505,7 @@ mod tests {
         let mut hx = FakeHx::new();
         hx.export_reported_disabled = true;
         export(&mut hx, FsPath::new(DIR), "hx-ai-1").unwrap();
-        assert_eq!(hx.log[0], "押す Export Preset...");
+        assert_eq!(hx.log[1], "押す Export Preset...");
     }
 
     #[test]
@@ -513,7 +528,14 @@ mod tests {
         let file = format!("{DIR}/hx-ai-2.hlx");
         import(&mut hx, FsPath::new(&file)).unwrap();
         assert_eq!(hx.imported, std::slice::from_ref(&file));
-        assert_eq!(hx.log, [format!("開く {file}"), "押す Yes".to_string()]);
+        assert_eq!(
+            hx.log,
+            [
+                "前面に出す".to_string(),
+                format!("開く {file}"),
+                "押す Yes".into()
+            ]
+        );
     }
 
     #[test]
@@ -553,7 +575,7 @@ mod tests {
         let mut hx = FakeHx::new();
         save(&mut hx).unwrap();
         assert_eq!(hx.saved, 1);
-        assert_eq!(hx.log, ["押す Save Preset"]);
+        assert_eq!(hx.log, ["前面に出す", "押す Save Preset"]);
     }
 
     #[test]

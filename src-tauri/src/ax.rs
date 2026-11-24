@@ -277,6 +277,10 @@ impl Ui for MacUi {
         Ok(())
     }
 
+    fn bring_to_front(&mut self) -> Result<(), String> {
+        crate::macos::activate(self.pid)
+    }
+
     fn open_in_hx_edit(&mut self, file: &FsPath) -> Result<(), String> {
         let status = std::process::Command::new("/usr/bin/open")
             .arg("-b")
