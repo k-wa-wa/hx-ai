@@ -5,12 +5,18 @@ mod ai_http_test;
 mod ai_live_test;
 mod audio;
 mod automation;
+mod ax;
+mod ax_tree;
 mod capture;
 mod catalog;
 mod config;
 mod geometry;
+mod hx_io;
+#[cfg(test)]
+mod hx_io_live_test;
 mod macos;
 mod permission;
+mod preset;
 mod screen_check;
 mod sound;
 mod value_fields;

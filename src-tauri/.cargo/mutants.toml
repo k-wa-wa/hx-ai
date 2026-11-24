@@ -5,6 +5,7 @@ exclude_globs = [
   "src/macos.rs",
   "src/audio.rs",
   "src/capture.rs",
+  "src/ax.rs",
   "src/lib.rs",
   "src/*_test.rs",
   "src/main.rs",
