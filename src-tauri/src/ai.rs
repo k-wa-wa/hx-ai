@@ -38,10 +38,39 @@ pub struct AiChange {
     pub value: String,
 }
 
+/// ブロック操作の種類。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockOpAction {
+    Enable,
+    Disable,
+    Add,
+    Remove,
+    Replace,
+}
+
+/// AI が提案する 1 件のブロック操作 (ON/OFF・追加・削除・モデル差し替え)。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiBlockOp {
+    pub action: BlockOpAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub position: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stereo: Option<bool>,
+    #[serde(default)]
+    pub amp_cab: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiResponse {
     pub explanation: String,
     pub changes: Vec<AiChange>,
+    #[serde(default)]
+    pub block_operations: Vec<AiBlockOp>,
     /// 目標に届いたので、これ以上変えなくてよいか (自動ループはこれで止まる)。
     #[serde(default)]
     pub goal_reached: bool,
@@ -122,36 +151,43 @@ pub struct RequestInput<'a> {
 
 pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp / HX Stomp XL を USB 接続で操作するギター音作りのアシスタントである。
 渡されるもの:
-- 現在のプリセットのシグナルチェーンと各ブロックのパラメータ一覧 (現在値・範囲・選択肢)
+- 現在のプリセットのシグナルチェーン・空きブロックスロット数・各ブロックのパラメータ一覧 (現在値・範囲・選択肢)
 - HX Stomp から録音した現在のギターの音 (渡された場合)
 - 目標にしたいリファレンス音源 (渡された場合)
 - ユーザーの指示
 
 やること:
 1. 音を聴き比べ、渡されたブロックとパラメータ一覧から現在の設定を読む。
-2. 指示 (とリファレンス) に近づけるためのパラメータ変更を決める。
+2. 指示 (とリファレンス) に近づけるためのパラメータ変更やブロック操作 (On/Off・追加・削除・モデル差し替え) を決める。
 3. 変更をアプリが自動で実行できる一覧として返す。
 
 チェーン一覧の見方:
+- 先頭付近に `空きブロックスロット: N 枠` と書かれる。0 枠のときは削除しない限りブロックを追加できない。
 - 各ブロックは `[block2] Tone Sovereign [ON]` のように `[blockN]` の識別子と名前・On/Off 状態で書かれる。
+- `[割り当て済み: 削除・差し替え不可]` が付いたブロック (フットスイッチやコントローラー割り当て等) は削除・モデル差し替えをしてはいけない (On/Off や固定されていないパラメータの変更はできる)。
 - その下に `- Gain 1: 2.2 (0.0〜10.0)` のように、パラメータ名・現在値・許容範囲や `[Overdrive / Boost / Distortion]` のような選択肢が並ぶ。
-- `[固定: 変更不可]` (スナップショットやコントローラー割り当て済み) や `(変更不可)` と書かれた項目は変更してはいけない。
+- `[固定: 変更不可]` や `(変更不可)` と書かれた項目は変更してはいけない。
 - `(参照のみ)` と書かれた項目も自動では変えられない。
 
 変更の決まり:
-- changes の各要素には `block` (例: "block2")、`parameter` (一覧にあるパラメータ名そのまま)、`value` (新しい値) を入れる。
+- パラメータ変更は `changes` に書く。各要素に `block` (例: "block2")、`parameter` (一覧にあるパラメータ名そのまま)、`value` (新しい値) を入れる。
+- ブロック操作は `block_operations` に書く (`action`: "enable" / "disable" / "add" / "remove" / "replace")。
+  - `enable` / `disable`: `block` のみ必須 (そのブロックの On/Off を切り替える)。
+  - `remove`: `block` のみ必須 (固定されていないブロックを削除する)。
+  - `add`: `model` に search_effects で確認した正確なモデル名を入れ、必要なら `position` ("end" / "before:block5" / "after:block2"、省略時は "end")・`stereo` (Stereo 版なら true)・`amp_cab` (Amp+Cab 1 ブロックにするなら true) を指定する。
+  - `replace`: `block` と `model` (と必要なら `stereo` / `amp_cab`) を指定し、モデルを差し替える。
+- `add` または `replace` を返したときは、アプリが実機へ反映した直後に新しいパラメータ一覧付きのチェーンを再送する。新しく追加・差し替えされたブロックの初期パラメータ設定は次の返答で行うため、同じ返答内の `changes` にまだ存在しないパラメータを書かないこと。
 - 数値の `value` は一覧の範囲内で書く (単位は省いても、表示されている単位を付けてもよい。例: "6.5", "-3.0")。
 - 選択肢の `value` は `[...]` の中に列挙された文字列から正確に選ぶ。
-- 1 回の変更は控えめにし、変更は最大 12 個までにする。同じブロック・パラメータを 1 回の中に重複させない。
-- ブロックの On/Off 切り替えやモデルの切り替えはアプリでは実行しない。必要なら explanation で手動操作を勧め、search_effects で調べた正確なモデル名を書くこと。
+- 1 回の変更 (`changes` と `block_operations` の合計) は控えめにし、合計最大 12 個までにする。同じブロック・パラメータを 1 回の中に重複させない。
 - 変更は一時編集バッファにだけ反映される (保存は人間が本体で行う)。
 
 関数 (ツール):
-- search_effects: HX Stomp のエフェクト一覧を category と query で検索する。別のモデルを勧めるときや、現在のモデルが何を元にしたものか確かめるときに使う。1 回の問い合わせで 3 回まで。
-- submit_changes: 答え (説明と変更一覧) を返す。最後に必ず 1 回呼ぶ。
+- search_effects: HX Stomp のエフェクト一覧を category と query で検索する。ブロック追加・差し替え時に正確なモデル名を確かめるときや、現在のモデルが何を元にしたものか確かめるときに使う。1 回の問い合わせで 3 回まで。
+- submit_changes: 答え (説明と変更一覧・ブロック操作一覧) を返す。最後に必ず 1 回呼ぶ。
 
 目標への到達:
-- 録音がユーザーの指示 (とリファレンス) に十分近く、これ以上変える必要が無いと判断したら goal_reached を true にし、changes を空にする。
+- 録音がユーザーの指示 (とリファレンス) に十分近く、これ以上変える必要が無いと判断したら goal_reached を true にし、changes を空にする (block_operations も空にする)。
 - まだ変える余地があるなら goal_reached を false にする。自動ループでは、録音 → あなたへの問い合わせ → 変更 を、goal_reached が true になるまで繰り返す。前回の変更で行き過ぎたと聴こえたら戻してよい。
 
 explanation は日本語で、何をなぜ変えるのか、録音とリファレンスの違いをどう聴いたのかを簡潔に書く。"#;
@@ -172,6 +208,24 @@ pub fn response_schema() -> Value {
                         "value": { "type": "string" }
                     },
                     "required": ["block", "parameter", "value"]
+                }
+            },
+            "block_operations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["enable", "disable", "add", "remove", "replace"]
+                        },
+                        "block": { "type": "string" },
+                        "model": { "type": "string" },
+                        "position": { "type": "string" },
+                        "stereo": { "type": "boolean" },
+                        "amp_cab": { "type": "boolean" }
+                    },
+                    "required": ["action"]
                 }
             },
             "goal_reached": { "type": "boolean" }
@@ -430,12 +484,84 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// AI の応答の基本形を確かめる (件数上限・空欄)。パラメータ実在と範囲は `hx_device::plan_changes` で検証する。
-pub fn validate(resp: &AiResponse) -> Result<(), String> {
-    if resp.changes.len() > MAX_CHANGES {
+fn parse_position(raw: Option<&str>) -> Result<crate::hx_device::BlockPosition, String> {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(crate::hx_device::BlockPosition::End);
+    };
+    if s.eq_ignore_ascii_case("end") {
+        return Ok(crate::hx_device::BlockPosition::End);
+    }
+    if let Some(target) = s.strip_prefix("before:") {
+        let t = target.trim();
+        if t.is_empty() {
+            return Err("追加位置 'before:' のブロック指定が空です".into());
+        }
+        return Ok(crate::hx_device::BlockPosition::Before(t.to_string()));
+    }
+    if let Some(target) = s.strip_prefix("after:") {
+        let t = target.trim();
+        if t.is_empty() {
+            return Err("追加位置 'after:' のブロック指定が空です".into());
+        }
+        return Ok(crate::hx_device::BlockPosition::After(t.to_string()));
+    }
+    Err(format!(
+        "追加位置 '{s}' を解釈できません (\"end\", \"before:blockN\", \"after:blockN\" のいずれかを指定してください)"
+    ))
+}
+
+fn require_non_empty(opt: Option<&String>, index: usize, field: &str) -> Result<String, String> {
+    let val = opt.map(|s| s.trim()).unwrap_or("");
+    if val.is_empty() {
         return Err(format!(
-            "AI が {} 個の変更を返しました (上限 {MAX_CHANGES} 個)。実行しません",
-            resp.changes.len()
+            "ブロック操作 {} に {field} がありません",
+            index + 1
+        ));
+    }
+    Ok(val.to_string())
+}
+
+/// AI の `block_operations` を検証付きで実機層 (`hx_device::BlockOp`) へ変換する。
+pub fn to_device_block_ops(ops: &[AiBlockOp]) -> Result<Vec<crate::hx_device::BlockOp>, String> {
+    use crate::hx_device::BlockOp;
+    let mut out = Vec::with_capacity(ops.len());
+    for (i, op) in ops.iter().enumerate() {
+        let converted = match op.action {
+            BlockOpAction::Enable => BlockOp::SetEnabled {
+                block: require_non_empty(op.block.as_ref(), i, "block")?,
+                enabled: true,
+            },
+            BlockOpAction::Disable => BlockOp::SetEnabled {
+                block: require_non_empty(op.block.as_ref(), i, "block")?,
+                enabled: false,
+            },
+            BlockOpAction::Remove => BlockOp::Remove {
+                block: require_non_empty(op.block.as_ref(), i, "block")?,
+            },
+            BlockOpAction::Add => BlockOp::Add {
+                model: require_non_empty(op.model.as_ref(), i, "model")?,
+                position: parse_position(op.position.as_deref())?,
+                stereo: op.stereo,
+                amp_cab: op.amp_cab,
+            },
+            BlockOpAction::Replace => BlockOp::Replace {
+                block: require_non_empty(op.block.as_ref(), i, "block")?,
+                model: require_non_empty(op.model.as_ref(), i, "model")?,
+                stereo: op.stereo,
+                amp_cab: op.amp_cab,
+            },
+        };
+        out.push(converted);
+    }
+    Ok(out)
+}
+
+/// AI の応答の基本形を確かめる (件数上限・空欄)。パラメータ実在と範囲は `hx_device` で検証する。
+pub fn validate(resp: &AiResponse) -> Result<(), String> {
+    let total = resp.changes.len() + resp.block_operations.len();
+    if total > MAX_CHANGES {
+        return Err(format!(
+            "AI が {total} 個の変更を返しました (上限 {MAX_CHANGES} 個)。実行しません"
         ));
     }
     for (i, c) in resp.changes.iter().enumerate() {
@@ -449,6 +575,7 @@ pub fn validate(resp: &AiResponse) -> Result<(), String> {
             ));
         }
     }
+    to_device_block_ops(&resp.block_operations)?;
     Ok(())
 }
 
@@ -608,6 +735,7 @@ mod tests {
         AiResponse {
             explanation: "x".into(),
             changes,
+            block_operations: vec![],
             goal_reached: false,
         }
     }
@@ -635,15 +763,93 @@ mod tests {
         let sample = AiResponse {
             explanation: String::new(),
             changes: vec![change("block2", "Gain 1", "3.0")],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Add,
+                block: Some("block2".into()),
+                model: Some("Dynamic Hall".into()),
+                position: Some("end".into()),
+                stereo: Some(false),
+                amp_cab: false,
+            }],
             goal_reached: false,
         };
         let json = serde_json::to_value(&sample).unwrap();
         assert_eq!(keys(&schema["properties"]), keys(&json));
-        assert_eq!(strings(&schema["required"]), keys(&json));
+        assert_eq!(
+            strings(&schema["required"]),
+            vec!["changes", "explanation", "goal_reached"]
+        );
 
         let item = &schema["properties"]["changes"]["items"];
         assert_eq!(keys(&item["properties"]), keys(&json["changes"][0]));
         assert_eq!(strings(&item["required"]), keys(&json["changes"][0]));
+
+        let op_item = &schema["properties"]["block_operations"]["items"];
+        assert_eq!(
+            keys(&op_item["properties"]),
+            keys(&json["block_operations"][0])
+        );
+        assert_eq!(strings(&op_item["required"]), vec!["action"]);
+    }
+
+    #[test]
+    fn validate_and_convert_block_operations() {
+        let ok = AiResponse {
+            explanation: "x".into(),
+            changes: vec![],
+            block_operations: vec![
+                AiBlockOp {
+                    action: BlockOpAction::Add,
+                    block: None,
+                    model: Some("Dynamic Hall".into()),
+                    position: Some("after:block2".into()),
+                    stereo: Some(true),
+                    amp_cab: false,
+                },
+                AiBlockOp {
+                    action: BlockOpAction::Enable,
+                    block: Some("block5".into()),
+                    model: None,
+                    position: None,
+                    stereo: None,
+                    amp_cab: false,
+                },
+            ],
+            goal_reached: false,
+        };
+        validate(&ok).unwrap();
+        let ops = to_device_block_ops(&ok.block_operations).unwrap();
+        assert_eq!(ops.len(), 2);
+
+        let bad_pos = AiResponse {
+            explanation: "x".into(),
+            changes: vec![],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Add,
+                block: None,
+                model: Some("Dynamic Hall".into()),
+                position: Some("middle".into()),
+                stereo: None,
+                amp_cab: false,
+            }],
+            goal_reached: false,
+        };
+        assert!(validate(&bad_pos).unwrap_err().contains("追加位置"));
+
+        let missing_block = AiResponse {
+            explanation: "x".into(),
+            changes: vec![],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Remove,
+                block: None,
+                model: None,
+                position: None,
+                stereo: None,
+                amp_cab: false,
+            }],
+            goal_reached: false,
+        };
+        assert!(validate(&missing_block).unwrap_err().contains("block"));
     }
 
     #[test]
@@ -775,12 +981,13 @@ mod tests {
 
     #[test]
     fn system_prompt_states_the_rules_and_tools() {
-        assert!(SYSTEM_PROMPT.contains(&format!("最大 {MAX_CHANGES} 個")));
+        assert!(SYSTEM_PROMPT.contains(&format!("合計最大 {MAX_CHANGES} 個")));
         assert!(SYSTEM_PROMPT.contains(SEARCH_TOOL));
         assert!(SYSTEM_PROMPT.contains(SUBMIT_TOOL));
         assert!(SYSTEM_PROMPT.contains(&format!("{MAX_SEARCHES} 回まで")));
         assert!(SYSTEM_PROMPT.contains("goal_reached を true にし、changes を空にする"));
         assert!(SYSTEM_PROMPT.contains("[固定: 変更不可]"));
+        assert!(SYSTEM_PROMPT.contains("[割り当て済み: 削除・差し替え不可]"));
         assert!(SYSTEM_PROMPT.contains("保存は人間"));
     }
 

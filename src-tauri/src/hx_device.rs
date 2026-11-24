@@ -11,7 +11,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use hx_catalog::{Catalog, Kind as CatalogKind};
-use hx_proto::{DeviceProfile, Preset, Value as WireValue, rpc};
+use hx_proto::{Preset, Value as WireValue, preset::Kind as SlotKind, rpc};
 use serde::Serialize;
 
 /// 実機のアイドル切断を防ぐため、tonepush-gui と同じ 700ms 周期で keepalive を送る。
@@ -42,7 +42,10 @@ pub fn probe_status(session_open: bool) -> Result<HxStatus, String> {
     })
 }
 
-/// AI やワークフローから渡す 1 件の変更指示。
+/// 1 回の応答で受け付ける操作の上限。
+pub const MAX_OPERATIONS: usize = 12;
+
+/// AI やワークフローから渡す 1 件のパラメータ変更指示。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Change {
     /// ブロック識別子 (例: `"block2"`)。
@@ -51,6 +54,41 @@ pub struct Change {
     pub parameter: String,
     /// 画面表示相当の新しい値 (例: `"2.5"`, `"Boost"`)。
     pub value: String,
+}
+
+/// ブロック追加時の配置位置。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockPosition {
+    /// メインラインの末尾 (Output の直前)。
+    End,
+    /// 指定ブロックの直前 (例: `"block5"`)。
+    Before(String),
+    /// 指定ブロックの直後 (例: `"block2"`)。
+    After(String),
+}
+
+/// AI やワークフローから渡す 1 件のブロック操作。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockOp {
+    SetEnabled {
+        block: String,
+        enabled: bool,
+    },
+    Remove {
+        block: String,
+    },
+    Add {
+        model: String,
+        position: BlockPosition,
+        stereo: Option<bool>,
+        amp_cab: bool,
+    },
+    Replace {
+        block: String,
+        model: String,
+        stereo: Option<bool>,
+        amp_cab: bool,
+    },
 }
 
 /// パラメータの見た目と制約。
@@ -82,6 +120,9 @@ pub struct BlockView {
     pub model_number: u32,
     pub name: String,
     pub enabled: bool,
+    /// フットスイッチ・コントローラー・スナップショット切り替え対象などのため、削除・モデル差し替え不可か。
+    pub locked: bool,
+    pub lock_reason: Option<String>,
     pub params: Vec<ParamView>,
     /// Amp+Cab ブロックの Cab 側など、読み取り参考用の注記。
     pub readonly_notes: Vec<String>,
@@ -94,6 +135,9 @@ pub struct ChainSnapshot {
     pub preset_name: String,
     pub tempo: Option<f32>,
     pub snapshots: Vec<String>,
+    pub free_block_slots: usize,
+    /// 構造変更を含む Undo 用に、読み込み時の編集バッファ生バイト列を控える。
+    pub raw_preset: Option<Vec<u8>>,
     pub blocks: Vec<BlockView>,
 }
 
@@ -162,6 +206,11 @@ pub trait HxPort: Send {
         param_index: usize,
         value: WireValue,
     ) -> Result<(), String>;
+    fn set_enabled(&mut self, slot: usize, enabled: bool) -> Result<(), String>;
+    fn clear_block(&mut self, slot: usize) -> Result<(), String>;
+    fn set_model(&mut self, slot: usize, model: u32, paired_cab: Option<u32>)
+    -> Result<(), String>;
+    fn write_preset_bytes(&mut self, bytes: &[u8]) -> Result<(), String>;
     fn catalog(&self) -> &Catalog;
 }
 
@@ -174,13 +223,45 @@ pub fn snapshot_from_preset(
     preset_name: String,
 ) -> ChainSnapshot {
     let mut locked_params: HashMap<(i64, i64), String> = HashMap::new();
+    let mut locked_blocks: HashMap<usize, String> = HashMap::new();
     for a in preset.assignments(layout) {
+        if let Ok(slot) = usize::try_from(a.block) {
+            locked_blocks
+                .entry(slot)
+                .or_insert_with(|| format!("{} に割り当て済み", a.source.label()));
+        }
         if let hx_proto::preset::Target::Param(idx) = a.target {
             locked_params
                 .entry((a.block, idx))
                 .or_insert_with(|| format!("コントローラー ({:?}) に割り当て済み", a.source));
         }
     }
+
+    // 有効なスナップショット間で ON/OFF が異なるブロックも、構成破壊を防ぐため保護する
+    let valid_snapshots: Vec<_> = preset
+        .snapshot_details()
+        .into_iter()
+        .filter(|s| s.valid)
+        .collect();
+    if valid_snapshots.len() > 1 {
+        for (slot, _) in preset.blocks() {
+            let states: Vec<bool> = valid_snapshots
+                .iter()
+                .filter_map(|s| s.enabled.get(slot).and_then(|v| *v))
+                .collect();
+            if states.iter().any(|&b| b) && states.iter().any(|&b| !b) {
+                locked_blocks
+                    .entry(slot)
+                    .or_insert_with(|| "スナップショット間で ON/OFF が異なるため固定".into());
+            }
+        }
+    }
+
+    let free_block_slots = preset
+        .slots
+        .iter()
+        .filter(|s| matches!(s.kind, SlotKind::Block | SlotKind::Empty) && s.model.is_none())
+        .count();
 
     let blocks = preset
         .blocks()
@@ -229,12 +310,17 @@ pub fn snapshot_from_preset(
                 }
             }
 
+            let lock_reason = locked_blocks.get(&slot).cloned();
+            let locked = lock_reason.is_some();
+
             BlockView {
                 id: format!("block{slot}"),
                 slot,
                 model_number,
                 name: model_name,
                 enabled: block.enabled,
+                locked,
+                lock_reason,
                 params,
                 readonly_notes,
             }
@@ -246,6 +332,8 @@ pub fn snapshot_from_preset(
         preset_name,
         tempo: preset.tempo(),
         snapshots: preset.snapshots(),
+        free_block_slots,
+        raw_preset: Some(preset.encode()),
         blocks,
     }
 }
@@ -338,6 +426,10 @@ pub fn render_chain(snap: &ChainSnapshot) -> String {
         out.push_str(&format!(" (Tempo: {tempo:.1} BPM)"));
     }
     out.push('\n');
+    out.push_str(&format!(
+        "空きブロックスロット: {} 枠\n",
+        snap.free_block_slots
+    ));
 
     if snap.blocks.is_empty() {
         out.push_str("(ブロックがありません)\n");
@@ -346,7 +438,12 @@ pub fn render_chain(snap: &ChainSnapshot) -> String {
 
     for b in &snap.blocks {
         let state = if b.enabled { "ON" } else { "BYPASSED (OFF)" };
-        out.push_str(&format!("\n[{}] {} [{}]\n", b.id, b.name, state));
+        let lock = if b.locked {
+            " [割り当て済み: 削除・差し替え不可]"
+        } else {
+            ""
+        };
+        out.push_str(&format!("\n[{}] {} [{}]{lock}\n", b.id, b.name, state));
         for p in &b.params {
             let range = match &p.kind {
                 ParamKindView::Number { min, max } => format!(" ({min}〜{max})"),
@@ -468,58 +565,884 @@ pub fn plan_changes(
     Ok(planned)
 }
 
-/// `apply_changes` の結果。部分的に適用されたあと失敗した場合も、適用済み分を返す。
-#[derive(Debug, Clone, PartialEq)]
-pub struct ApplyOutcome {
-    pub applied: Vec<AppliedChange>,
-    pub error: Option<String>,
+/// 名前・ステレオ指定・Amp+Cab 指定から解決したカタログ上のモデル情報。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModel {
+    pub model_number: u32,
+    pub paired_cab: Option<u32>,
+    pub display_name: String,
+    pub is_stereo: bool,
 }
 
-/// 検証してから実機へ変更を送り、Undo 用の適用記録を返す。
-/// 検証エラー (1 件も送っていない) は `Err`、送信途中の失敗は `Ok(ApplyOutcome { applied, error: Some(...) })`。
-pub fn apply_changes(
+fn find_symbol_for_model<'a>(
+    catalog: &'a Catalog,
+    model_id: &str,
+    stereo: Option<bool>,
+    model_name: &str,
+) -> Result<&'a hx_catalog::Symbol, String> {
+    let mut candidates: Vec<_> = catalog
+        .symbols()
+        .iter()
+        .filter(|s| s.model.as_deref() == Some(model_id))
+        .collect();
+    candidates.sort_by_key(|s| s.number);
+    if candidates.is_empty() {
+        return Err(format!(
+            "モデル '{model_name}' のデバイス番号が見つかりません"
+        ));
+    }
+    let has_non_stereo = candidates.iter().any(|s| !s.symbol.ends_with("Stereo"));
+    match stereo {
+        Some(true) => candidates
+            .into_iter()
+            .find(|s| s.symbol.ends_with("Stereo"))
+            .ok_or_else(|| format!("モデル '{model_name}' には Stereo 版がありません")),
+        Some(false) => candidates
+            .into_iter()
+            .find(|s| !s.symbol.ends_with("Stereo"))
+            .ok_or_else(|| format!("モデル '{model_name}' には Mono 版がありません")),
+        None => {
+            if has_non_stereo {
+                Ok(candidates
+                    .into_iter()
+                    .find(|s| !s.symbol.ends_with("Stereo"))
+                    .unwrap())
+            } else {
+                Ok(candidates.into_iter().next().unwrap())
+            }
+        }
+    }
+}
+
+/// モデル名・ステレオ指定・Amp+Cab 指定から実機のモデル番号を解決する。
+pub fn resolve_model(
+    catalog: &Catalog,
+    name: &str,
+    stereo: Option<bool>,
+    amp_cab: bool,
+) -> Result<ResolvedModel, String> {
+    let trimmed = name.trim();
+    let (base_name, inferred_stereo) = if let Some(stripped) = trimmed
+        .strip_suffix("(Stereo)")
+        .or_else(|| trimmed.strip_suffix("(stereo)"))
+    {
+        (stripped.trim(), Some(true))
+    } else if let Some(stripped) = trimmed
+        .strip_suffix("(Mono)")
+        .or_else(|| trimmed.strip_suffix("(mono)"))
+    {
+        (stripped.trim(), Some(false))
+    } else {
+        (trimmed, None)
+    };
+    let effective_stereo = stereo.or(inferred_stereo);
+    if base_name.is_empty() {
+        return Err("モデル名が空です".into());
+    }
+
+    let mut matches: Vec<_> = catalog
+        .models()
+        .filter(|m| m.name.eq_ignore_ascii_case(base_name) || m.id.eq_ignore_ascii_case(base_name))
+        .collect();
+    matches.sort_by(|a, b| a.id.cmp(&b.id));
+    if matches.is_empty() {
+        return Err(format!(
+            "モデル '{base_name}' が HX Edit のカタログに見つかりません (search_effects で正確な名前を確認してください)"
+        ));
+    }
+    let model = if amp_cab {
+        matches
+            .iter()
+            .copied()
+            .find(|m| m.cab_link.is_some())
+            .unwrap_or(matches[0])
+    } else {
+        matches[0]
+    };
+
+    let sym = find_symbol_for_model(catalog, &model.id, effective_stereo, &model.name)?;
+    let paired_cab = if amp_cab {
+        let cab = catalog.paired_cab(model).ok_or_else(|| {
+            format!(
+                "モデル '{}' にはペアの Cab 定義がありません (amp_cab を false にしてください)",
+                model.name
+            )
+        })?;
+        let cab_sym = find_symbol_for_model(catalog, &cab.id, None, &cab.name)?;
+        Some(cab_sym.number)
+    } else {
+        None
+    };
+
+    let display_name = if paired_cab.is_some() {
+        format!("{} (Amp+Cab)", model.name)
+    } else {
+        model.name.clone()
+    };
+
+    Ok(ResolvedModel {
+        model_number: sym.number,
+        paired_cab,
+        display_name,
+        is_stereo: sym.symbol.ends_with("Stereo"),
+    })
+}
+
+fn apply_planned_writes(
     port: &mut dyn HxPort,
-    snap: &ChainSnapshot,
-    changes: &[Change],
-) -> Result<ApplyOutcome, String> {
-    let planned = plan_changes(snap, changes, port.catalog())?;
+    planned: Vec<PlannedWrite>,
+) -> Result<Vec<AppliedChange>, (Vec<AppliedChange>, String)> {
     let mut applied = Vec::with_capacity(planned.len());
     for w in planned {
         let wire = w.wire_kind.wire(w.new_native);
         if let Err(e) = port.write_param(w.slot, w.param_index, wire) {
-            let msg = if applied.is_empty() {
-                e
-            } else {
-                format!("{} 件適用したところで失敗しました: {e}", applied.len())
-            };
-            return Ok(ApplyOutcome {
-                applied,
-                error: Some(msg),
-            });
+            return Err((applied, e));
         }
         applied.push(AppliedChange::from(w));
     }
-    Ok(ApplyOutcome {
-        applied,
-        error: None,
-    })
+    Ok(applied)
 }
 
-/// 適用済みの変更を逆順で元の生値に戻す。失敗した項目だけ返す。
-pub fn restore_changes(port: &mut dyn HxPort, applied: &[AppliedChange]) -> Vec<RestoreFailure> {
-    let mut failures = Vec::new();
-    for a in applied.iter().rev() {
-        let wire = a.wire_kind.wire(a.previous_native);
-        if let Err(reason) = port.write_param(a.slot, a.param_index, wire) {
-            failures.push(RestoreFailure {
-                block: a.block_id.clone(),
-                parameter: a.param_name.clone(),
-                value: a.previous_display.clone(),
-                reason,
+/// 軽量な編集変更 (パラメータ変更・ON/OFF) の Undo 要素。
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppliedEdit {
+    Param(AppliedChange),
+    Enabled {
+        slot: usize,
+        block_id: String,
+        block_name: String,
+        previous_enabled: bool,
+        new_enabled: bool,
+    },
+}
+
+/// 画面表示やログ向けの 1 件の実行記録。
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppliedStep {
+    Param(AppliedChange),
+    Enabled {
+        block_id: String,
+        previous_enabled: bool,
+        new_enabled: bool,
+    },
+    Removed {
+        block_id: String,
+        previous_name: String,
+    },
+    Replaced {
+        block_id: String,
+        previous_name: String,
+        new_name: String,
+    },
+    Added {
+        block_id: String,
+        model_name: String,
+    },
+}
+
+/// 1 サイクル分の Undo データ。
+#[derive(Debug, Clone, PartialEq)]
+pub enum UndoEntry {
+    /// パラメータ変更・ON/OFF のみ: 個別に逆順で戻す。
+    Edits(Vec<AppliedEdit>),
+    /// ブロック追加・削除・モデル差し替えを含む: 変更前の編集バッファ丸ごと戻す。
+    PresetSnapshot {
+        before_bytes: Vec<u8>,
+        summary: String,
+    },
+}
+
+/// `apply_operations` の結果。
+#[derive(Debug, Clone, PartialEq)]
+pub struct OperationsOutcome {
+    pub steps: Vec<AppliedStep>,
+    pub undo: Option<UndoEntry>,
+    pub structure_changed: bool,
+    pub added_or_replaced: bool,
+    pub error: Option<String>,
+}
+
+enum PlannedOp {
+    SetEnabled {
+        slot: usize,
+        block_id: String,
+        block_name: String,
+        previous_enabled: bool,
+        enabled: bool,
+    },
+    Replace {
+        slot: usize,
+        block_id: String,
+        previous_name: String,
+        model: ResolvedModel,
+    },
+    Remove {
+        slot: usize,
+        block_id: String,
+        previous_name: String,
+    },
+    Add {
+        position: BlockPosition,
+        model: ResolvedModel,
+    },
+}
+
+fn ensure_block_unlocked(b: &BlockView, action: &str) -> Result<(), String> {
+    if b.locked {
+        let reason = b
+            .lock_reason
+            .as_deref()
+            .unwrap_or("割り当てがあるため操作できません");
+        return Err(format!(
+            "{} ({}) は{action}できません ({reason})",
+            b.id, b.name
+        ));
+    }
+    Ok(())
+}
+
+fn find_block<'a>(snap: &'a ChainSnapshot, id: &str) -> Result<&'a BlockView, String> {
+    snap.blocks
+        .iter()
+        .find(|b| b.id == id)
+        .ok_or_else(|| format!("ブロック '{id}' が現在のチェーンに見つかりません"))
+}
+
+fn plan_operations(
+    snap: &ChainSnapshot,
+    changes: &[Change],
+    ops: &[BlockOp],
+    catalog: &Catalog,
+) -> Result<(Vec<PlannedWrite>, Vec<PlannedOp>), String> {
+    if changes.len() + ops.len() > MAX_OPERATIONS {
+        return Err(format!(
+            "1 回の操作が多すぎます ({} 件; 上限 {MAX_OPERATIONS} 件)",
+            changes.len() + ops.len()
+        ));
+    }
+
+    let planned_params = plan_changes(snap, changes, catalog)?;
+    let mut removed_blocks: HashSet<String> = HashSet::new();
+    let mut replaced_blocks: HashSet<String> = HashSet::new();
+    let mut toggled_blocks: HashSet<String> = HashSet::new();
+
+    for op in ops {
+        match op {
+            BlockOp::Remove { block } => {
+                if !removed_blocks.insert(block.clone()) {
+                    return Err(format!("{block} の削除が 1 回の中に重複しています"));
+                }
+            }
+            BlockOp::Replace { block, .. } => {
+                if !replaced_blocks.insert(block.clone()) {
+                    return Err(format!("{block} のモデル変更が 1 回の中に重複しています"));
+                }
+            }
+            BlockOp::SetEnabled { block, .. } => {
+                if !toggled_blocks.insert(block.clone()) {
+                    return Err(format!(
+                        "{block} の ON/OFF 切り替えが 1 回の中に重複しています"
+                    ));
+                }
+            }
+            BlockOp::Add { .. } => {}
+        }
+    }
+
+    for c in changes {
+        if removed_blocks.contains(&c.block) {
+            return Err(format!(
+                "{} は削除予定のためパラメータ変更を同時に行えません",
+                c.block
+            ));
+        }
+        if replaced_blocks.contains(&c.block) {
+            return Err(format!(
+                "{} はモデル変更後のパラメータ再取得が必要なため、差し替え後に変更してください",
+                c.block
+            ));
+        }
+    }
+
+    let mut add_count = 0usize;
+    let mut planned_ops = Vec::with_capacity(ops.len());
+    for op in ops {
+        match op {
+            BlockOp::SetEnabled { block, enabled } => {
+                let b = find_block(snap, block)?;
+                if removed_blocks.contains(&b.id) {
+                    return Err(format!("{} は削除予定のため ON/OFF できません", b.id));
+                }
+                planned_ops.push(PlannedOp::SetEnabled {
+                    slot: b.slot,
+                    block_id: b.id.clone(),
+                    block_name: b.name.clone(),
+                    previous_enabled: b.enabled,
+                    enabled: *enabled,
+                });
+            }
+            BlockOp::Remove { block } => {
+                let b = find_block(snap, block)?;
+                if replaced_blocks.contains(&b.id) {
+                    return Err(format!("{} に削除とモデル変更を同時に行えません", b.id));
+                }
+                ensure_block_unlocked(b, "削除")?;
+                planned_ops.push(PlannedOp::Remove {
+                    slot: b.slot,
+                    block_id: b.id.clone(),
+                    previous_name: b.name.clone(),
+                });
+            }
+            BlockOp::Replace {
+                block,
+                model,
+                stereo,
+                amp_cab,
+            } => {
+                let b = find_block(snap, block)?;
+                ensure_block_unlocked(b, "モデル変更")?;
+                let resolved = resolve_model(catalog, model, *stereo, *amp_cab)?;
+                planned_ops.push(PlannedOp::Replace {
+                    slot: b.slot,
+                    block_id: b.id.clone(),
+                    previous_name: b.name.clone(),
+                    model: resolved,
+                });
+            }
+            BlockOp::Add {
+                model,
+                position,
+                stereo,
+                amp_cab,
+            } => {
+                add_count += 1;
+                let resolved = resolve_model(catalog, model, *stereo, *amp_cab)?;
+                match position {
+                    BlockPosition::Before(target) | BlockPosition::After(target) => {
+                        let b = find_block(snap, target)?;
+                        if removed_blocks.contains(&b.id) {
+                            return Err(format!(
+                                "削除予定のブロック {} を基準に追加位置を指定できません",
+                                b.id
+                            ));
+                        }
+                    }
+                    BlockPosition::End => {}
+                }
+                planned_ops.push(PlannedOp::Add {
+                    position: position.clone(),
+                    model: resolved,
+                });
+            }
+        }
+    }
+
+    if add_count > 0 {
+        if snap.raw_preset.is_none() {
+            return Err("ブロック追加に必要なプリセット構造情報がありません".into());
+        }
+        if snap.free_block_slots + removed_blocks.len() < add_count {
+            return Err(format!(
+                "空きブロックスロットが足りません (追加 {add_count} 個、空き {} 枠)",
+                snap.free_block_slots + removed_blocks.len()
+            ));
+        }
+    }
+
+    Ok((planned_params, planned_ops))
+}
+
+fn resolve_insert_anchor(
+    preset: &Preset,
+    position: &BlockPosition,
+    slot_map: &HashMap<usize, usize>,
+) -> Result<usize, String> {
+    let layout = preset.layout();
+    match position {
+        BlockPosition::End => {
+            if let Some(output) = layout.paths.first().and_then(|p| p.output) {
+                return Ok(output);
+            }
+            let last_hold = preset
+                .slots
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, s)| matches!(s.kind, SlotKind::Block | SlotKind::Empty))
+                .map(|(i, _)| i + 1)
+                .ok_or_else(|| "配置できるブロックスロットがありません".to_string())?;
+            Ok(last_hold)
+        }
+        BlockPosition::Before(id) => {
+            let orig = parse_block_slot(id)?;
+            slot_map
+                .get(&orig)
+                .copied()
+                .ok_or_else(|| format!("配置基準ブロック {id} の位置を追跡できません"))
+        }
+        BlockPosition::After(id) => {
+            let orig = parse_block_slot(id)?;
+            let cur = slot_map
+                .get(&orig)
+                .copied()
+                .ok_or_else(|| format!("配置基準ブロック {id} の位置を追跡できません"))?;
+            let Some(bounds) = preset.lane_bounds(cur) else {
+                return Ok(cur + 1);
+            };
+            let mut seg_end = bounds.end;
+            for path in &layout.paths {
+                if path.input.is_some() && bounds.start <= cur && cur < bounds.end {
+                    let split_at = path.split.and_then(|s| preset.attach_of(s));
+                    let join_at = path.join.and_then(|j| preset.attach_of(j));
+                    if let (Some(sp), Some(jn)) = (split_at, join_at) {
+                        if bounds.contains(&sp) && cur < sp {
+                            seg_end = sp;
+                        } else if bounds.contains(&jn) && cur < jn {
+                            seg_end = jn;
+                        }
+                    }
+                    break;
+                }
+            }
+            Ok((cur + 1).min(seg_end))
+        }
+    }
+}
+
+fn parse_block_slot(id: &str) -> Result<usize, String> {
+    id.strip_prefix("block")
+        .and_then(|s| s.parse::<usize>().ok())
+        .ok_or_else(|| format!("ブロック名 '{id}' の形式が不正です"))
+}
+
+fn occupied_block_slots(preset: &Preset) -> Vec<usize> {
+    preset.blocks().map(|(i, _)| i).collect()
+}
+
+fn finish_outcome(
+    steps: Vec<AppliedStep>,
+    edits: Vec<AppliedEdit>,
+    before_bytes: Option<Vec<u8>>,
+    structure_applied: bool,
+    added_or_replaced: bool,
+    error: Option<String>,
+) -> OperationsOutcome {
+    let undo = if steps.is_empty() {
+        None
+    } else if structure_applied {
+        before_bytes.map(|bytes| UndoEntry::PresetSnapshot {
+            before_bytes: bytes,
+            summary: steps
+                .iter()
+                .map(|s| match s {
+                    AppliedStep::Added {
+                        block_id,
+                        model_name,
+                    } => {
+                        format!("{block_id}: {model_name} 追加")
+                    }
+                    AppliedStep::Removed {
+                        block_id,
+                        previous_name,
+                    } => format!("{block_id}: {previous_name} 削除"),
+                    AppliedStep::Replaced {
+                        block_id,
+                        previous_name,
+                        new_name,
+                    } => format!("{block_id}: {previous_name} → {new_name}"),
+                    AppliedStep::Enabled {
+                        block_id,
+                        new_enabled,
+                        ..
+                    } => format!("{block_id}: {}", if *new_enabled { "ON" } else { "OFF" }),
+                    AppliedStep::Param(c) => {
+                        format!("{} / {} = {}", c.block_id, c.param_name, c.new_display)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        })
+    } else {
+        Some(UndoEntry::Edits(edits))
+    };
+
+    let err_msg = error.map(|e| {
+        if steps.is_empty() {
+            e
+        } else {
+            format!("{} 件実行したところで失敗しました: {e}", steps.len())
+        }
+    });
+
+    OperationsOutcome {
+        steps,
+        undo,
+        structure_changed: structure_applied,
+        added_or_replaced,
+        error: err_msg,
+    }
+}
+
+/// パラメータ変更とブロック操作 (ON/OFF・追加・削除・差し替え) を検証して実行する。
+/// 検証エラー時は 1 バイトも書き込まず `Err` を返す。
+pub fn apply_operations(
+    port: &mut dyn HxPort,
+    snap: &ChainSnapshot,
+    changes: &[Change],
+    ops: &[BlockOp],
+) -> Result<OperationsOutcome, String> {
+    let (planned_params, planned_ops) = plan_operations(snap, changes, ops, port.catalog())?;
+    let before_bytes = snap.raw_preset.clone();
+
+    let mut steps = Vec::new();
+    let mut edits = Vec::new();
+    let mut structure_applied = false;
+    let mut added_or_replaced = false;
+    let mut touched_before_add = false;
+
+    match apply_planned_writes(port, planned_params) {
+        Ok(applied) => {
+            for a in applied {
+                touched_before_add = true;
+                steps.push(AppliedStep::Param(a.clone()));
+                edits.push(AppliedEdit::Param(a));
+            }
+        }
+        Err((partial, e)) => {
+            for a in partial {
+                steps.push(AppliedStep::Param(a.clone()));
+                edits.push(AppliedEdit::Param(a));
+            }
+            return Ok(finish_outcome(
+                steps,
+                edits,
+                before_bytes,
+                false,
+                false,
+                Some(e),
+            ));
+        }
+    }
+
+    let mut enables = Vec::new();
+    let mut replaces = Vec::new();
+    let mut removes = Vec::new();
+    let mut adds = Vec::new();
+    for op in planned_ops {
+        match op {
+            PlannedOp::SetEnabled {
+                slot,
+                block_id,
+                block_name,
+                previous_enabled,
+                enabled,
+            } => enables.push((slot, block_id, block_name, previous_enabled, enabled)),
+            PlannedOp::Replace {
+                slot,
+                block_id,
+                previous_name,
+                model,
+            } => replaces.push((slot, block_id, previous_name, model)),
+            PlannedOp::Remove {
+                slot,
+                block_id,
+                previous_name,
+            } => removes.push((slot, block_id, previous_name)),
+            PlannedOp::Add { position, model } => adds.push((position, model)),
+        }
+    }
+
+    for (slot, block_id, block_name, previous_enabled, enabled) in enables {
+        if let Err(e) = port.set_enabled(slot, enabled) {
+            return Ok(finish_outcome(
+                steps,
+                edits,
+                before_bytes,
+                structure_applied,
+                added_or_replaced,
+                Some(e),
+            ));
+        }
+        touched_before_add = true;
+        steps.push(AppliedStep::Enabled {
+            block_id: block_id.clone(),
+            previous_enabled,
+            new_enabled: enabled,
+        });
+        edits.push(AppliedEdit::Enabled {
+            slot,
+            block_id,
+            block_name,
+            previous_enabled,
+            new_enabled: enabled,
+        });
+    }
+
+    for (slot, block_id, previous_name, model) in replaces {
+        if let Err(e) = port.set_model(slot, model.model_number, model.paired_cab) {
+            return Ok(finish_outcome(
+                steps,
+                edits,
+                before_bytes,
+                structure_applied,
+                added_or_replaced,
+                Some(e),
+            ));
+        }
+        structure_applied = true;
+        added_or_replaced = true;
+        touched_before_add = true;
+        steps.push(AppliedStep::Replaced {
+            block_id,
+            previous_name,
+            new_name: model.display_name,
+        });
+    }
+
+    for (slot, block_id, previous_name) in removes {
+        if let Err(e) = port.clear_block(slot) {
+            return Ok(finish_outcome(
+                steps,
+                edits,
+                before_bytes,
+                structure_applied,
+                added_or_replaced,
+                Some(e),
+            ));
+        }
+        structure_applied = true;
+        touched_before_add = true;
+        steps.push(AppliedStep::Removed {
+            block_id,
+            previous_name,
+        });
+    }
+
+    if !adds.is_empty() {
+        // 先に実行した変更を古いドキュメントで上書きしないよう、変更済みなら最新状態を読み直す
+        let mut preset = if touched_before_add {
+            match port.read_snapshot() {
+                Ok(fresh) => {
+                    let bytes = fresh.raw_preset.ok_or_else(|| {
+                        "ブロック追加後の最新プリセット構造を取得できませんでした".to_string()
+                    });
+                    match bytes.and_then(|b| {
+                        Preset::parse(&b)
+                            .ok_or_else(|| "読み直したプリセットを解析できませんでした".to_string())
+                    }) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return Ok(finish_outcome(
+                                steps,
+                                edits,
+                                before_bytes,
+                                structure_applied,
+                                added_or_replaced,
+                                Some(e),
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Ok(finish_outcome(
+                        steps,
+                        edits,
+                        before_bytes,
+                        structure_applied,
+                        added_or_replaced,
+                        Some(e),
+                    ));
+                }
+            }
+        } else {
+            let bytes = before_bytes
+                .as_deref()
+                .ok_or_else(|| "プリセット構造情報がありません".to_string())?;
+            Preset::parse(bytes).ok_or_else(|| "プリセットを解析できませんでした".to_string())?
+        };
+
+        let mut slot_map: HashMap<usize, usize> =
+            snap.blocks.iter().map(|b| (b.slot, b.slot)).collect();
+
+        for (add_index, (position, model)) in adds.into_iter().enumerate() {
+            if add_index > 0 {
+                // 2 つ目以降の追加では前の set_model を反映した最新ドキュメントを読む
+                match port.read_snapshot() {
+                    Ok(fresh) => {
+                        let Some(bytes) = fresh.raw_preset else {
+                            return Ok(finish_outcome(
+                                steps,
+                                edits,
+                                before_bytes,
+                                structure_applied,
+                                added_or_replaced,
+                                Some("追加後のプリセット構造を取得できませんでした".into()),
+                            ));
+                        };
+                        let Some(p) = Preset::parse(&bytes) else {
+                            return Ok(finish_outcome(
+                                steps,
+                                edits,
+                                before_bytes,
+                                structure_applied,
+                                added_or_replaced,
+                                Some("読み直したプリセットを解析できませんでした".into()),
+                            ));
+                        };
+                        preset = p;
+                    }
+                    Err(e) => {
+                        return Ok(finish_outcome(
+                            steps,
+                            edits,
+                            before_bytes,
+                            structure_applied,
+                            added_or_replaced,
+                            Some(e),
+                        ));
+                    }
+                }
+            }
+
+            let anchor = match resolve_insert_anchor(&preset, &position, &slot_map) {
+                Ok(a) => a,
+                Err(e) => {
+                    return Ok(finish_outcome(
+                        steps,
+                        edits,
+                        before_bytes,
+                        structure_applied,
+                        added_or_replaced,
+                        Some(e),
+                    ));
+                }
+            };
+            let before_add_bytes = preset.encode();
+            let before_occupied = occupied_block_slots(&preset);
+            let Some(target) = preset.room_before(anchor) else {
+                return Ok(finish_outcome(
+                    steps,
+                    edits,
+                    before_bytes,
+                    structure_applied,
+                    added_or_replaced,
+                    Some("このレーンに空きスロットがありません".into()),
+                ));
+            };
+            let after_occupied = occupied_block_slots(&preset);
+            let moved = preset.encode() != before_add_bytes;
+
+            // スライド前後で占有スロット一覧の対応を取り、元のブロック識別子を追跡する
+            if moved && before_occupied.len() == after_occupied.len() {
+                let shift: HashMap<usize, usize> =
+                    before_occupied.into_iter().zip(after_occupied).collect();
+                for cur in slot_map.values_mut() {
+                    if let Some(&next) = shift.get(cur) {
+                        *cur = next;
+                    }
+                }
+            }
+
+            if moved {
+                let moved_bytes = preset.encode();
+                if let Err(e) = port.write_preset_bytes(&moved_bytes) {
+                    return Ok(finish_outcome(
+                        steps,
+                        edits,
+                        before_bytes,
+                        structure_applied,
+                        added_or_replaced,
+                        Some(e),
+                    ));
+                }
+                structure_applied = true;
+            }
+
+            if let Err(e) = port.set_model(target, model.model_number, model.paired_cab) {
+                if moved {
+                    // スライドだけ送った状態でモデル配置が拒否 (DSP 不足等) されたら、配置前の状態に戻す
+                    let _ = port.write_preset_bytes(&before_add_bytes);
+                }
+                return Ok(finish_outcome(
+                    steps,
+                    edits,
+                    before_bytes,
+                    structure_applied,
+                    added_or_replaced,
+                    Some(e),
+                ));
+            }
+            structure_applied = true;
+            added_or_replaced = true;
+            steps.push(AppliedStep::Added {
+                block_id: format!("block{target}"),
+                model_name: model.display_name,
             });
         }
     }
+
+    Ok(finish_outcome(
+        steps,
+        edits,
+        before_bytes,
+        structure_applied,
+        added_or_replaced,
+        None,
+    ))
+}
+
+fn restore_edits(port: &mut dyn HxPort, edits: &[AppliedEdit]) -> Vec<RestoreFailure> {
+    let mut failures = Vec::new();
+    for edit in edits.iter().rev() {
+        match edit {
+            AppliedEdit::Param(a) => {
+                let wire = a.wire_kind.wire(a.previous_native);
+                if let Err(reason) = port.write_param(a.slot, a.param_index, wire) {
+                    failures.push(RestoreFailure {
+                        block: a.block_id.clone(),
+                        parameter: a.param_name.clone(),
+                        value: a.previous_display.clone(),
+                        reason,
+                    });
+                }
+            }
+            AppliedEdit::Enabled {
+                slot,
+                block_id,
+                previous_enabled,
+                ..
+            } => {
+                if let Err(reason) = port.set_enabled(*slot, *previous_enabled) {
+                    failures.push(RestoreFailure {
+                        block: block_id.clone(),
+                        parameter: "状態 (ON/OFF)".into(),
+                        value: if *previous_enabled { "ON" } else { "OFF" }.into(),
+                        reason,
+                    });
+                }
+            }
+        }
+    }
     failures
+}
+
+/// `UndoEntry` に記録された変更を実機へ戻す。戻せなかった項目だけ返す。
+pub fn restore_undo(port: &mut dyn HxPort, entry: &UndoEntry) -> Vec<RestoreFailure> {
+    match entry {
+        UndoEntry::Edits(edits) => restore_edits(port, edits),
+        UndoEntry::PresetSnapshot {
+            before_bytes,
+            summary,
+        } => match port.write_preset_bytes(before_bytes) {
+            Ok(()) => Vec::new(),
+            Err(reason) => vec![RestoreFailure {
+                block: "プリセット".into(),
+                parameter: "編集バッファ復元".into(),
+                value: summary.clone(),
+                reason,
+            }],
+        },
+    }
 }
 
 /// 実機の HX Stomp / HX Stomp XL と USB で通信するポート。
@@ -581,6 +1504,43 @@ impl UsbHxPort {
         }
         Ok(self.session.as_mut().expect("session initialized"))
     }
+
+    fn call_session<T>(
+        &mut self,
+        f: impl FnOnce(&mut hx_usb::Session) -> hx_usb::Result<T>,
+    ) -> Result<T, String> {
+        let _ = self.ensure_session()?;
+        let res = f(self.session.as_mut().unwrap());
+        match res {
+            Ok(v) => Ok(v),
+            Err(e) => {
+                if e.loses_session() {
+                    self.session = None;
+                }
+                Err(format_usb_error(e))
+            }
+        }
+    }
+
+    fn read_preset_settled(&mut self) -> Result<Preset, String> {
+        for attempt in 0..3 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            let _ = self.ensure_session()?;
+            match self.session.as_mut().unwrap().read_preset() {
+                Ok(preset) => return Ok(preset),
+                Err(e) if !e.loses_session() && attempt < 2 => continue,
+                Err(e) => {
+                    if e.loses_session() {
+                        self.session = None;
+                    }
+                    return Err(format_usb_error(e));
+                }
+            }
+        }
+        unreachable!("loop returns by attempt 2")
+    }
 }
 
 fn format_usb_error(err: hx_usb::Error) -> String {
@@ -589,6 +1549,9 @@ fn format_usb_error(err: hx_usb::Error) -> String {
         hx_usb::Error::Claim(detail) => format!(
             "HX Stomp の USB 制御をつかめません (HX Edit が開いていれば閉じてください): {detail}"
         ),
+        hx_usb::Error::Device(-306) => {
+            "HX Stomp の DSP 容量が足りず、このブロックを追加/変更できません".into()
+        }
         other => format!("HX Stomp との USB 通信に失敗しました: {other}"),
     }
 }
@@ -599,35 +1562,12 @@ impl HxPort for UsbHxPort {
     }
 
     fn read_snapshot(&mut self) -> Result<ChainSnapshot, String> {
-        let _ = self.ensure_session()?;
-        let res = {
-            let s = self.session.as_mut().unwrap();
-            let profile: DeviceProfile = s.profile;
-            let info = s.preset_info();
-            let preset = s.read_preset();
-            (profile, info, preset)
-        };
-
-        let (profile, info_res, preset_res) = res;
-        let preset = match preset_res {
-            Ok(p) => p,
-            Err(e) => {
-                if e.loses_session() {
-                    self.session = None;
-                }
-                return Err(format_usb_error(e));
-            }
-        };
-
-        let (slot_label, preset_name) = match info_res {
-            Ok((_, index, name)) => (profile.slot_label(index), name),
-            Err(e) => {
-                if e.loses_session() {
-                    self.session = None;
-                }
-                return Err(format_usb_error(e));
-            }
-        };
+        let preset = self.read_preset_settled()?;
+        let (profile, (slot_label, preset_name)) = self.call_session(|s| {
+            let profile = s.profile;
+            let (_, index, name) = s.preset_info()?;
+            Ok((profile, (profile.slot_label(index), name)))
+        })?;
 
         Ok(snapshot_from_preset(
             &preset,
@@ -644,19 +1584,33 @@ impl HxPort for UsbHxPort {
         param_index: usize,
         value: WireValue,
     ) -> Result<(), String> {
-        let _ = self.ensure_session()?;
-        let res = self
-            .session
-            .as_mut()
-            .unwrap()
-            .set_param(slot as i64, param_index as i64, value);
-        if let Err(e) = res {
-            if e.loses_session() {
-                self.session = None;
-            }
-            return Err(format_usb_error(e));
-        }
-        Ok(())
+        self.call_session(|s| s.set_param(slot as i64, param_index as i64, value))
+    }
+
+    fn set_enabled(&mut self, slot: usize, enabled: bool) -> Result<(), String> {
+        self.call_session(|s| s.set_enabled(slot as i64, enabled))
+    }
+
+    fn clear_block(&mut self, slot: usize) -> Result<(), String> {
+        self.call_session(|s| s.clear_block(slot as i64))
+    }
+
+    fn set_model(
+        &mut self,
+        slot: usize,
+        model: u32,
+        paired_cab: Option<u32>,
+    ) -> Result<(), String> {
+        self.call_session(|s| match paired_cab {
+            Some(cab) => s.set_model_pair(slot as i64, model, cab),
+            None => s.set_model(slot as i64, model),
+        })
+    }
+
+    fn write_preset_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let preset = Preset::parse(bytes)
+            .ok_or_else(|| "復元・書き込み用のプリセットデータが不正です".to_string())?;
+        self.call_session(|s| s.write_preset(&preset))
     }
 }
 
@@ -795,6 +1749,35 @@ mod tests {
                         "default": 0.0
                     }
                 ]
+            },
+            {
+                "symbolicID": "Test_DynamicHall",
+                "name": "Dynamic Hall",
+                "category": 2,
+                "params": [
+                    {
+                        "symbolicID": "Mix",
+                        "name": "Mix",
+                        "valueType": 1,
+                        "displayType": "generic_knob",
+                        "min": 0.0,
+                        "max": 1.0,
+                        "default": 0.35
+                    }
+                ]
+            },
+            {
+                "symbolicID": "Test_BritJ45Brt",
+                "name": "Brit J45 Brt",
+                "category": 3,
+                "cablink": "Test_CabDeluxe",
+                "params": []
+            },
+            {
+                "symbolicID": "Test_CabDeluxe",
+                "name": "1x12 US Deluxe",
+                "category": 4,
+                "params": []
             }
         ]"#;
         std::fs::write(dir.join("distortion.models"), models).unwrap();
@@ -810,6 +1793,36 @@ mod tests {
                         { "id": "Test_ToneSovereign" }
                     ],
                     "subcategories": []
+                },
+                {
+                    "id": 2,
+                    "name": "Reverb",
+                    "shortName": "Verb",
+                    "color": "0xff7722",
+                    "models": [
+                        { "id": "Test_DynamicHall" }
+                    ],
+                    "subcategories": []
+                },
+                {
+                    "id": 3,
+                    "name": "Amp",
+                    "shortName": "Amp",
+                    "color": "0xdd1111",
+                    "models": [
+                        { "id": "Test_BritJ45Brt" }
+                    ],
+                    "subcategories": []
+                },
+                {
+                    "id": 4,
+                    "name": "Cab",
+                    "shortName": "Cab",
+                    "color": "0x888888",
+                    "models": [
+                        { "id": "Test_CabDeluxe" }
+                    ],
+                    "subcategories": []
                 }
             ]
         }"#;
@@ -819,6 +1832,24 @@ mod tests {
             {
                 "symbol": "Test_ToneSovereign",
                 "parameters": ["Gain1", "Clipping1", "Bright"]
+            },
+            {
+                "symbol": "Test_DynamicHallMono",
+                "model": "Test_DynamicHall",
+                "parameters": ["Mix"]
+            },
+            {
+                "symbol": "Test_DynamicHallStereo",
+                "model": "Test_DynamicHall",
+                "parameters": ["Mix"]
+            },
+            {
+                "symbol": "Test_BritJ45Brt",
+                "parameters": []
+            },
+            {
+                "symbol": "Test_CabDeluxe",
+                "parameters": []
             }
         ]"#;
         std::fs::write(dir.join("Helix.sym"), sym).unwrap();
@@ -827,12 +1858,39 @@ mod tests {
         (catalog, TempDir(dir))
     }
 
+    #[derive(Debug, Clone, PartialEq)]
+    enum FakeEvent {
+        Param(usize, usize, WireValue),
+        Enabled(usize, bool),
+        Clear(usize),
+        Model(usize, u32, Option<u32>),
+        WritePreset,
+    }
+
     struct FakePort {
         catalog: Catalog,
         snapshot: ChainSnapshot,
         writes: Vec<(usize, usize, WireValue)>,
+        events: Vec<FakeEvent>,
         write_calls: usize,
         fail_on_write: Option<usize>,
+        fail_on_set_model: Option<String>,
+        fail_on_write_preset: Option<String>,
+    }
+
+    impl FakePort {
+        fn new(catalog: Catalog, snapshot: ChainSnapshot) -> Self {
+            Self {
+                catalog,
+                snapshot,
+                writes: vec![],
+                events: vec![],
+                write_calls: 0,
+                fail_on_write: None,
+                fail_on_set_model: None,
+                fail_on_write_preset: None,
+            }
+        }
     }
 
     impl HxPort for FakePort {
@@ -850,7 +1908,105 @@ mod tests {
             if self.fail_on_write == Some(call) {
                 return Err("USB write error".into());
             }
-            self.writes.push((slot, param_index, value));
+            self.writes.push((slot, param_index, value.clone()));
+            self.events.push(FakeEvent::Param(slot, param_index, value));
+            Ok(())
+        }
+        fn set_enabled(&mut self, slot: usize, enabled: bool) -> Result<(), String> {
+            self.events.push(FakeEvent::Enabled(slot, enabled));
+            Ok(())
+        }
+        fn clear_block(&mut self, slot: usize) -> Result<(), String> {
+            self.events.push(FakeEvent::Clear(slot));
+            if let Some(bytes) = self.snapshot.raw_preset.as_deref()
+                && let Some(mut p) = Preset::parse(bytes)
+                && let Some(hx_proto::msgpack::Value::Array(slots)) = p.tone.at_mut(&[0, 22])
+                && let Some(s) = slots.get_mut(slot)
+            {
+                *s = hx_proto::msgmap! { 19 => hx_proto::msgpack::Value::Int(8), 20 => hx_proto::msgpack::Value::Nil };
+                let refreshed = Preset::parse(&p.encode()).expect("valid cleared preset");
+                self.snapshot = snapshot_from_preset(
+                    &refreshed,
+                    &self.catalog,
+                    rpc::ControlLayout::Stomp,
+                    self.snapshot.slot_label.clone(),
+                    self.snapshot.preset_name.clone(),
+                );
+            }
+            Ok(())
+        }
+        fn set_model(
+            &mut self,
+            slot: usize,
+            model: u32,
+            paired_cab: Option<u32>,
+        ) -> Result<(), String> {
+            if let Some(err) = &self.fail_on_set_model {
+                return Err(err.clone());
+            }
+            self.events.push(FakeEvent::Model(slot, model, paired_cab));
+            if let Some(bytes) = self.snapshot.raw_preset.as_deref()
+                && let Some(mut p) = Preset::parse(bytes)
+                && let Some(hx_proto::msgpack::Value::Array(slots)) = p.tone.at_mut(&[0, 22])
+                && let Some(s) = slots.get_mut(slot)
+            {
+                let ref_map = hx_proto::msgmap! {
+                    23 => hx_proto::msgpack::Value::Bool(paired_cab.is_some()),
+                    25 => hx_proto::msgpack::Value::Int(model as i64),
+                    26 => hx_proto::msgpack::Value::Int(paired_cab.map_or(-1, |c| c as i64)),
+                };
+                let empty_vals = || {
+                    hx_proto::msgmap! {
+                        2 => hx_proto::msgpack::Value::Int(0),
+                        3 => hx_proto::msgpack::Value::Int(0),
+                        4 => hx_proto::msgpack::Value::Array(vec![]),
+                    }
+                };
+                let body = if paired_cab.is_some() {
+                    hx_proto::msgmap! {
+                        9 => hx_proto::msgpack::Value::Int(0),
+                        10 => hx_proto::msgpack::Value::Bool(true),
+                        24 => ref_map,
+                        11 => empty_vals(),
+                        12 => empty_vals(),
+                    }
+                } else {
+                    hx_proto::msgmap! {
+                        9 => hx_proto::msgpack::Value::Int(0),
+                        10 => hx_proto::msgpack::Value::Bool(true),
+                        24 => ref_map,
+                        11 => empty_vals(),
+                    }
+                };
+                *s = hx_proto::msgmap! {
+                    19 => hx_proto::msgpack::Value::Int(6),
+                    20 => body,
+                };
+                let refreshed = Preset::parse(&p.encode()).expect("valid model preset");
+                self.snapshot = snapshot_from_preset(
+                    &refreshed,
+                    &self.catalog,
+                    rpc::ControlLayout::Stomp,
+                    self.snapshot.slot_label.clone(),
+                    self.snapshot.preset_name.clone(),
+                );
+            }
+            Ok(())
+        }
+        fn write_preset_bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
+            if let Some(err) = &self.fail_on_write_preset {
+                return Err(err.clone());
+            }
+            self.events.push(FakeEvent::WritePreset);
+            if let Some(p) = Preset::parse(bytes) {
+                self.snapshot = snapshot_from_preset(
+                    &p,
+                    &self.catalog,
+                    rpc::ControlLayout::Stomp,
+                    self.snapshot.slot_label.clone(),
+                    self.snapshot.preset_name.clone(),
+                );
+            }
             Ok(())
         }
         fn catalog(&self) -> &Catalog {
@@ -875,12 +2031,16 @@ mod tests {
             preset_name: "Test Preset".into(),
             tempo: Some(120.0),
             snapshots: vec!["SNAPSHOT 1".into()],
+            free_block_slots: 3,
+            raw_preset: None,
             blocks: vec![BlockView {
                 id: "block2".into(),
                 slot: 2,
                 model_number: 0,
                 name: "Tone Sovereign".into(),
                 enabled: true,
+                locked: false,
+                lock_reason: None,
                 params,
                 readonly_notes: vec![],
             }],
@@ -995,14 +2155,8 @@ mod tests {
     fn apply_writes_nothing_if_second_change_is_invalid() {
         let (catalog, _tmp) = test_catalog();
         let snap = sample_snapshot(&catalog, false);
-        let mut port = FakePort {
-            catalog,
-            snapshot: snap.clone(),
-            writes: vec![],
-            write_calls: 0,
-            fail_on_write: None,
-        };
-        let err = apply_changes(
+        let mut port = FakePort::new(catalog, snap.clone());
+        let err = apply_operations(
             &mut port,
             &snap,
             &[
@@ -1017,6 +2171,7 @@ mod tests {
                     value: "99.0".into(),
                 },
             ],
+            &[],
         )
         .unwrap_err();
         assert!(!err.is_empty());
@@ -1027,14 +2182,8 @@ mod tests {
     fn apply_and_restore_writes_exact_wire_values_in_reverse_order() {
         let (catalog, _tmp) = test_catalog();
         let snap = sample_snapshot(&catalog, false);
-        let mut port = FakePort {
-            catalog,
-            snapshot: snap.clone(),
-            writes: vec![],
-            write_calls: 0,
-            fail_on_write: None,
-        };
-        let outcome = apply_changes(
+        let mut port = FakePort::new(catalog, snap.clone());
+        let outcome = apply_operations(
             &mut port,
             &snap,
             &[
@@ -1049,16 +2198,16 @@ mod tests {
                     value: "Distortion".into(),
                 },
             ],
+            &[],
         )
         .unwrap();
         assert_eq!(outcome.error, None);
-        let applied = outcome.applied;
         assert_eq!(
             port.writes,
             vec![(2, 0, WireValue::F32(0.5)), (2, 1, WireValue::Int(2)),]
         );
         port.writes.clear();
-        let failures = restore_changes(&mut port, &applied);
+        let failures = restore_undo(&mut port, outcome.undo.as_ref().unwrap());
         assert!(failures.is_empty());
         assert_eq!(
             port.writes,
@@ -1070,14 +2219,9 @@ mod tests {
     fn apply_partial_failure_keeps_already_written_changes() {
         let (catalog, _tmp) = test_catalog();
         let snap = sample_snapshot(&catalog, false);
-        let mut port = FakePort {
-            catalog,
-            snapshot: snap.clone(),
-            writes: vec![],
-            write_calls: 0,
-            fail_on_write: Some(1),
-        };
-        let outcome = apply_changes(
+        let mut port = FakePort::new(catalog, snap.clone());
+        port.fail_on_write = Some(1);
+        let outcome = apply_operations(
             &mut port,
             &snap,
             &[
@@ -1092,25 +2236,23 @@ mod tests {
                     value: "Distortion".into(),
                 },
             ],
+            &[],
         )
         .unwrap();
-        assert_eq!(outcome.applied.len(), 1);
-        assert_eq!(outcome.applied[0].param_name, "Gain 1");
-        assert!(outcome.error.unwrap().contains("1 件適用"));
+        assert_eq!(outcome.steps.len(), 1);
+        assert!(matches!(
+            &outcome.steps[0],
+            AppliedStep::Param(a) if a.param_name == "Gain 1"
+        ));
+        assert!(outcome.error.unwrap().contains("1 件実行"));
     }
 
     #[test]
     fn restore_continues_and_reports_failed_item() {
         let (catalog, _tmp) = test_catalog();
         let snap = sample_snapshot(&catalog, false);
-        let mut port = FakePort {
-            catalog,
-            snapshot: snap.clone(),
-            writes: vec![],
-            write_calls: 0,
-            fail_on_write: None,
-        };
-        let applied = apply_changes(
+        let mut port = FakePort::new(catalog, snap.clone());
+        let undo = apply_operations(
             &mut port,
             &snap,
             &[
@@ -1125,16 +2267,530 @@ mod tests {
                     value: "Distortion".into(),
                 },
             ],
+            &[],
         )
         .unwrap()
-        .applied;
+        .undo
+        .unwrap();
         port.writes.clear();
         port.write_calls = 0;
         port.fail_on_write = Some(0);
-        let failures = restore_changes(&mut port, &applied);
+        let failures = restore_undo(&mut port, &undo);
         assert_eq!(failures.len(), 1);
         assert_eq!(failures[0].parameter, "Clipping 1");
         assert_eq!(port.writes, vec![(2, 0, WireValue::F32(0.22))]);
+    }
+
+    #[test]
+    fn multiple_adds_track_after_position_across_insertions() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = snapshot_from_preset(
+            &test_preset(false, false),
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "Multi Add".into(),
+        );
+        let mut port = FakePort::new(catalog, snap.clone());
+
+        let outcome = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[
+                BlockOp::Add {
+                    model: "Brit J45 Brt".into(),
+                    position: BlockPosition::Before("block1".into()),
+                    stereo: None,
+                    amp_cab: false,
+                },
+                BlockOp::Add {
+                    model: "Dynamic Hall".into(),
+                    position: BlockPosition::After("block1".into()),
+                    stereo: None,
+                    amp_cab: false,
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(outcome.error, None);
+        // slot1 前に Brit J45 Brt (slot1)、ずれた元 block1 (= Tone Sovereign @ slot2) の直後 slot3 に Dynamic Hall
+        assert_eq!(port.snapshot.blocks.len(), 3);
+        assert_eq!(port.snapshot.blocks[0].model_number, 3);
+        assert_eq!(port.snapshot.blocks[1].model_number, 0);
+        assert_eq!(port.snapshot.blocks[2].model_number, 1);
+    }
+
+    fn test_preset(with_footswitch_on_slot1: bool, snapshot_diff_on_slot1: bool) -> Preset {
+        use hx_proto::msgpack::Value as V;
+        let block_slot = |model: i64| {
+            hx_proto::msgmap! {
+                19 => V::Int(6),
+                20 => hx_proto::msgmap! {
+                    9 => V::Int(0),
+                    10 => V::Bool(true),
+                    24 => hx_proto::msgmap! {
+                        23 => V::Bool(false),
+                        25 => V::Int(model),
+                        26 => V::Int(-1),
+                    },
+                    11 => hx_proto::msgmap! {
+                        2 => V::Int(3),
+                        3 => V::Int(3),
+                        4 => V::Array(vec![V::F32(0.22), V::F32(1.0), V::F32(0.0)]),
+                    },
+                },
+            }
+        };
+        let empty = || hx_proto::msgmap! { 19 => V::Int(8), 20 => V::Nil };
+        let input = hx_proto::msgmap! { 19 => V::Int(0), 20 => V::Nil };
+        let output = hx_proto::msgmap! { 19 => V::Int(1), 20 => V::Nil };
+
+        // slot 0: Input, slot 1: Tone Sovereign (0), slot 2: Empty, slot 3: Empty, slot 4: Output
+        let assignments = if with_footswitch_on_slot1 {
+            // Stomp ordinal 4 = Footswitch 1
+            let entry = hx_proto::msgmap! {
+                1 => hx_proto::msgmap! {
+                    5 => V::Int(1),
+                    9 => V::Int(1),
+                    1 => V::Int(4),
+                },
+            };
+            V::Array(vec![V::Nil, V::Nil, V::Nil, V::Nil, V::Array(vec![entry])])
+        } else {
+            V::Nil
+        };
+
+        let snapshot_section = if snapshot_diff_on_slot1 {
+            let snap1 = hx_proto::msgmap! {
+                0 => V::Bool(true),
+                3 => V::Array(vec![
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                ]),
+                4 => V::Str("SNAP 1".into()),
+                5 => V::F32(0.0),
+            };
+            let snap2 = hx_proto::msgmap! {
+                0 => V::Bool(true),
+                3 => V::Array(vec![
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(false)]),
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(true)]),
+                ]),
+                4 => V::Str("SNAP 2".into()),
+                5 => V::F32(0.0),
+            };
+            hx_proto::msgmap! { 10 => V::Array(vec![snap1, snap2]) }
+        } else {
+            V::Nil
+        };
+
+        let tone = hx_proto::msgmap! {
+            7 => hx_proto::msgmap! {
+                0 => V::UInt(0x0380_0000),
+                1 => V::Str("v3.80".into()),
+            },
+            0 => hx_proto::msgmap! {
+                22 => V::Array(vec![input, block_slot(0), empty(), empty(), output]),
+            },
+            1 => V::Nil,
+            3 => V::Nil,
+            4 => assignments,
+            2 => V::Nil,
+            5 => V::Nil,
+            6 => V::Nil,
+            10 => snapshot_section,
+        };
+        let bytes = encode_test_preset(&tone);
+        Preset::parse(&bytes).expect("test preset parses")
+    }
+
+    fn encode_test_preset(tone: &hx_proto::msgpack::Value) -> Vec<u8> {
+        use hx_proto::msgpack::{Decoder, Encoder, Value};
+        const SLOT_ORDER: [i64; 9] = [0, 1, 3, 4, 2, 5, 6, 7, 10];
+        let magic = Encoder::encode(&Value::Str(Preset::MAGIC.to_owned()));
+        let table_len = (1 + SLOT_ORDER.len() + 2) * 4;
+        let table_hdr = Encoder::encode(&Value::Bin(vec![0; table_len], 1)).len() - table_len;
+        let tone_at = magic.len() + table_hdr + table_len;
+        let tone_bytes = Encoder::encode(tone);
+        let mut key_at = std::collections::HashMap::new();
+        let mut key_end = std::collections::HashMap::new();
+        let count = (tone_bytes[0] & 0x0f) as usize;
+        let mut at = 1usize;
+        for _ in 0..count {
+            let here = at;
+            let mut d = Decoder::new(&tone_bytes[at..]);
+            let key = d.value().unwrap().as_i64().unwrap();
+            let after_key = tone_bytes.len() - d.remaining();
+            let mut dv = Decoder::new(&tone_bytes[after_key..]);
+            dv.value().unwrap();
+            at = tone_bytes.len() - dv.remaining();
+            key_at.insert(key, tone_at + here);
+            key_end.insert(key, tone_at + at);
+        }
+        let snapshots_end = *key_end.get(&10).unwrap();
+        let mut sections = Vec::with_capacity(table_len);
+        sections.extend_from_slice(&(tone_at as u32).to_le_bytes());
+        for key in SLOT_ORDER {
+            sections.extend_from_slice(&(*key_at.get(&key).unwrap() as u32).to_le_bytes());
+        }
+        sections.extend_from_slice(&(snapshots_end as u32).to_le_bytes());
+        sections.extend_from_slice(&(snapshots_end as u32).to_le_bytes());
+
+        let mut blob = magic;
+        blob.extend_from_slice(&Encoder::encode(&Value::Bin(sections, 1)));
+        blob.extend_from_slice(&tone_bytes);
+        blob
+    }
+
+    #[test]
+    fn resolve_model_handles_mono_stereo_and_amp_cab() {
+        let (catalog, _tmp) = test_catalog();
+        // 指定なしなら Mono 優先
+        let mono = resolve_model(&catalog, "Dynamic Hall", None, false).unwrap();
+        assert_eq!(mono.model_number, 1);
+        assert!(!mono.is_stereo);
+
+        // Stereo 明示、および末尾 "(Stereo)" 表記
+        let stereo = resolve_model(&catalog, "Dynamic Hall (Stereo)", None, false).unwrap();
+        assert_eq!(stereo.model_number, 2);
+        assert!(stereo.is_stereo);
+
+        // Mono のみのモデルに Stereo 指定したらエラー
+        let err = resolve_model(&catalog, "Tone Sovereign", Some(true), false).unwrap_err();
+        assert!(err.contains("Stereo 版がありません"), "{err}");
+
+        // Amp 単体 vs Amp+Cab
+        let amp_only = resolve_model(&catalog, "Brit J45 Brt", None, false).unwrap();
+        assert_eq!(amp_only.model_number, 3);
+        assert_eq!(amp_only.paired_cab, None);
+
+        let amp_cab = resolve_model(&catalog, "Brit J45 Brt", None, true).unwrap();
+        assert_eq!(amp_cab.model_number, 3);
+        assert_eq!(amp_cab.paired_cab, Some(4));
+        assert!(amp_cab.display_name.contains("Amp+Cab"));
+
+        // Cab 定義のないモデルに amp_cab = true はエラー
+        let err = resolve_model(&catalog, "Dynamic Hall", None, true).unwrap_err();
+        assert!(err.contains("ペアの Cab 定義がありません"), "{err}");
+    }
+
+    #[test]
+    fn snapshot_locks_blocks_assigned_to_footswitch_or_snapshots() {
+        let (catalog, _tmp) = test_catalog();
+
+        let p_fs = test_preset(true, false);
+        let snap_fs = snapshot_from_preset(
+            &p_fs,
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "FS Preset".into(),
+        );
+        assert!(snap_fs.blocks[0].locked);
+        assert_eq!(snap_fs.free_block_slots, 2);
+        assert!(render_chain(&snap_fs).contains("割り当て済み: 削除・差し替え不可"));
+        assert!(render_chain(&snap_fs).contains("空きブロックスロット: 2 枠"));
+
+        let p_snap = test_preset(false, true);
+        let snap_sn = snapshot_from_preset(
+            &p_snap,
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "Snap Preset".into(),
+        );
+        assert!(snap_sn.blocks[0].locked);
+    }
+
+    #[test]
+    fn operations_reject_removing_or_replacing_locked_block() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = snapshot_from_preset(
+            &test_preset(true, false),
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "FS Preset".into(),
+        );
+        let mut port = FakePort::new(catalog, snap.clone());
+
+        let err = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[BlockOp::Remove {
+                block: "block1".into(),
+            }],
+        )
+        .unwrap_err();
+        assert!(err.contains("削除できません"), "{err}");
+        assert!(port.events.is_empty());
+
+        let err = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[BlockOp::Replace {
+                block: "block1".into(),
+                model: "Dynamic Hall".into(),
+                stereo: None,
+                amp_cab: false,
+            }],
+        )
+        .unwrap_err();
+        assert!(err.contains("モデル変更できません"), "{err}");
+        assert!(port.events.is_empty());
+    }
+
+    #[test]
+    fn set_enabled_applies_and_restores_as_lightweight_edits() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = sample_snapshot(&catalog, false);
+        let mut port = FakePort::new(catalog, snap.clone());
+
+        let outcome = apply_operations(
+            &mut port,
+            &snap,
+            &[Change {
+                block: "block2".into(),
+                parameter: "Gain 1".into(),
+                value: "5.0".into(),
+            }],
+            &[BlockOp::SetEnabled {
+                block: "block2".into(),
+                enabled: false,
+            }],
+        )
+        .unwrap();
+
+        assert!(!outcome.structure_changed);
+        assert!(!outcome.added_or_replaced);
+        assert_eq!(outcome.steps.len(), 2);
+        assert_eq!(
+            port.events,
+            vec![
+                FakeEvent::Param(2, 0, WireValue::F32(0.5)),
+                FakeEvent::Enabled(2, false),
+            ]
+        );
+        assert!(matches!(outcome.undo, Some(UndoEntry::Edits(_))));
+
+        port.events.clear();
+        let failures = restore_undo(&mut port, outcome.undo.as_ref().unwrap());
+        assert!(failures.is_empty());
+        assert_eq!(
+            port.events,
+            vec![
+                FakeEvent::Enabled(2, true),
+                FakeEvent::Param(2, 0, WireValue::F32(0.22)),
+            ]
+        );
+    }
+
+    #[test]
+    fn add_before_slides_blocks_writes_preset_and_restores_snapshot_on_undo() {
+        let (catalog, _tmp) = test_catalog();
+        let preset = test_preset(false, false);
+        let orig_bytes = preset.encode();
+        let snap = snapshot_from_preset(
+            &preset,
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "Add Test".into(),
+        );
+        let mut port = FakePort::new(catalog, snap.clone());
+
+        // slot 1 に Tone Sovereign があり、その前に Dynamic Hall Stereo を挿す
+        let outcome = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[BlockOp::Add {
+                model: "Dynamic Hall".into(),
+                position: BlockPosition::Before("block1".into()),
+                stereo: Some(true),
+                amp_cab: false,
+            }],
+        )
+        .unwrap();
+
+        assert!(outcome.structure_changed);
+        assert!(outcome.added_or_replaced);
+        assert_eq!(outcome.error, None);
+        assert_eq!(
+            outcome.steps,
+            vec![AppliedStep::Added {
+                block_id: "block1".into(),
+                model_name: "Dynamic Hall".into(),
+            }]
+        );
+        // slot 1 を空けるために WritePreset が飛び、その後 slot 1 に model=2 (Dynamic Hall Stereo)
+        assert_eq!(
+            port.events,
+            vec![FakeEvent::WritePreset, FakeEvent::Model(1, 2, None)]
+        );
+        assert_eq!(port.snapshot.blocks.len(), 2);
+        assert_eq!(port.snapshot.blocks[0].model_number, 2);
+        assert_eq!(port.snapshot.blocks[1].model_number, 0);
+
+        // Undo で元の編集バッファ丸ごと戻る
+        let undo = outcome.undo.unwrap();
+        assert!(matches!(undo, UndoEntry::PresetSnapshot { .. }));
+        port.events.clear();
+        let failures = restore_undo(&mut port, &undo);
+        assert!(failures.is_empty());
+        assert_eq!(port.events, vec![FakeEvent::WritePreset]);
+        assert_eq!(
+            port.snapshot.raw_preset.as_deref(),
+            Some(orig_bytes.as_slice())
+        );
+    }
+
+    #[test]
+    fn add_at_end_places_without_sliding_when_free_slot_follows() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = snapshot_from_preset(
+            &test_preset(false, false),
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "End Test".into(),
+        );
+        let mut port = FakePort::new(catalog, snap.clone());
+
+        let outcome = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[BlockOp::Add {
+                model: "Brit J45 Brt".into(),
+                position: BlockPosition::End,
+                stereo: None,
+                amp_cab: true,
+            }],
+        )
+        .unwrap();
+
+        // slot 2 が空いているので WritePreset は飛ばず set_model(2, 3, Some(4)) のみ
+        assert_eq!(port.events, vec![FakeEvent::Model(2, 3, Some(4))]);
+        assert_eq!(
+            outcome.steps,
+            vec![AppliedStep::Added {
+                block_id: "block2".into(),
+                model_name: "Brit J45 Brt (Amp+Cab)".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn add_rolls_back_slide_if_device_refuses_model_e_g_dsp_limit() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = snapshot_from_preset(
+            &test_preset(false, false),
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "DSP Fail".into(),
+        );
+        let mut port = FakePort::new(catalog, snap.clone());
+        port.fail_on_set_model = Some("DSP 不足".into());
+
+        let outcome = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[BlockOp::Add {
+                model: "Dynamic Hall".into(),
+                position: BlockPosition::Before("block1".into()),
+                stereo: None,
+                amp_cab: false,
+            }],
+        )
+        .unwrap();
+
+        assert!(outcome.error.unwrap().contains("DSP 不足"));
+        assert!(outcome.steps.is_empty());
+        // スライド WritePreset のあとにロールバック WritePreset が呼ばれている
+        assert_eq!(
+            port.events,
+            vec![FakeEvent::WritePreset, FakeEvent::WritePreset]
+        );
+    }
+
+    #[test]
+    fn remove_and_replace_execute_and_reject_contradictions() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = snapshot_from_preset(
+            &test_preset(false, false),
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "Remove Replace".into(),
+        );
+        let mut port = FakePort::new(catalog, snap.clone());
+
+        // 差し替えと同時の旧パラメータ変更は事前検証で弾く
+        let err = apply_operations(
+            &mut port,
+            &snap,
+            &[Change {
+                block: "block1".into(),
+                parameter: "Gain 1".into(),
+                value: "5.0".into(),
+            }],
+            &[BlockOp::Replace {
+                block: "block1".into(),
+                model: "Dynamic Hall".into(),
+                stereo: None,
+                amp_cab: false,
+            }],
+        )
+        .unwrap_err();
+        assert!(err.contains("差し替え後"), "{err}");
+        assert!(port.events.is_empty());
+
+        // Replace 単独なら実行され PresetSnapshot で Undo できる
+        let outcome = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[BlockOp::Replace {
+                block: "block1".into(),
+                model: "Dynamic Hall".into(),
+                stereo: None,
+                amp_cab: false,
+            }],
+        )
+        .unwrap();
+        assert!(outcome.structure_changed);
+        assert!(outcome.added_or_replaced);
+        assert_eq!(port.events, vec![FakeEvent::Model(1, 1, None)]);
+
+        // Clear (Remove)
+        let snap2 = port.snapshot.clone();
+        port.events.clear();
+        let outcome2 = apply_operations(
+            &mut port,
+            &snap2,
+            &[],
+            &[BlockOp::Remove {
+                block: "block1".into(),
+            }],
+        )
+        .unwrap();
+        assert!(outcome2.structure_changed);
+        assert!(!outcome2.added_or_replaced);
+        assert_eq!(port.events, vec![FakeEvent::Clear(1)]);
+        assert_eq!(port.snapshot.blocks.len(), 0);
     }
 
     fn verify_usb_round_trip(idle_wait: Duration) {
@@ -1189,7 +2845,7 @@ mod tests {
             })
             .expect("動かせる数値パラメータが現在のプリセットにありません");
 
-        let applied = apply_changes(
+        let undo = apply_operations(
             port.lock().unwrap().as_mut().unwrap(),
             &before,
             &[Change {
@@ -1197,9 +2853,11 @@ mod tests {
                 parameter: param_name.clone(),
                 value: next_val.clone(),
             }],
+            &[],
         )
         .unwrap()
-        .applied;
+        .undo
+        .unwrap();
         let after = port
             .lock()
             .unwrap()
@@ -1222,7 +2880,7 @@ mod tests {
             changed.value
         );
 
-        let failures = restore_changes(port.lock().unwrap().as_mut().unwrap(), &applied);
+        let failures = restore_undo(port.lock().unwrap().as_mut().unwrap(), &undo);
         assert!(failures.is_empty(), "復元に失敗: {failures:?}");
         let restored = port
             .lock()

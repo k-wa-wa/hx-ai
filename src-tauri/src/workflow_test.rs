@@ -8,11 +8,11 @@ use std::sync::atomic::Ordering;
 use base64::Engine as _;
 use serde_json::Value;
 
-use crate::ai::{AiChange, AiResponse, RestoreTarget};
+use crate::ai::{AiBlockOp, AiChange, AiResponse, BlockOpAction, RestoreTarget};
 use crate::config::StoredSettings;
 use crate::hx_device::{
-    AppliedChange, ApplyOutcome, BlockView, ChainSnapshot, Change, ParamKindView, ParamView,
-    RestoreFailure,
+    AppliedChange, AppliedEdit, AppliedStep, BlockOp, BlockView, ChainSnapshot, Change,
+    OperationsOutcome, ParamKindView, ParamView, RestoreFailure, UndoEntry,
 };
 use crate::sound::Prepared;
 use crate::workflow::{
@@ -23,14 +23,14 @@ use crate::workflow::{
 struct FakeEngine {
     chains: VecDeque<Result<ChainSnapshot, String>>,
     answers: VecDeque<Result<AiResponse, String>>,
-    apply_results: VecDeque<Result<ApplyOutcome, String>>,
+    apply_results: VecDeque<Result<OperationsOutcome, String>>,
     restore_failures: VecDeque<Vec<RestoreFailure>>,
     /// AI に送ったリクエスト本文。
     requests: Vec<Value>,
-    /// apply に渡った変更。
-    applied_calls: Vec<Vec<Change>>,
-    /// restore に渡った適用記録。
-    restored_calls: Vec<Vec<AppliedChange>>,
+    /// apply に渡った変更とブロック操作。
+    applied_calls: Vec<(Vec<Change>, Vec<BlockOp>)>,
+    /// restore に渡った Undo エントリ。
+    restored_calls: Vec<UndoEntry>,
     /// 自動ループの録音の台本。尽きたら `recording()` を返す。
     recordings: VecDeque<Result<Prepared, String>>,
     records: usize,
@@ -46,12 +46,16 @@ fn sample_chain() -> ChainSnapshot {
         preset_name: "Test Preset".into(),
         tempo: Some(120.0),
         snapshots: vec!["SNAPSHOT 1".into()],
+        free_block_slots: 4,
+        raw_preset: None,
         blocks: vec![BlockView {
             id: "block5".into(),
             slot: 5,
             model_number: 1,
             name: "Brit J45 Brt".into(),
             enabled: true,
+            locked: false,
+            lock_reason: None,
             params: vec![
                 ParamView {
                     index: 0,
@@ -124,11 +128,14 @@ impl FakeEngine {
     }
 }
 
-fn default_apply(_snap: &ChainSnapshot, changes: &[Change]) -> ApplyOutcome {
-    let applied = changes
-        .iter()
-        .enumerate()
-        .map(|(i, c)| AppliedChange {
+fn default_apply(snap: &ChainSnapshot, changes: &[Change], ops: &[BlockOp]) -> OperationsOutcome {
+    let mut steps = Vec::new();
+    let mut edits = Vec::new();
+    let mut structure_changed = false;
+    let mut added_or_replaced = false;
+
+    for (i, c) in changes.iter().enumerate() {
+        let a = AppliedChange {
             slot: 5,
             block_id: c.block.clone(),
             block_name: "Brit J45 Brt".into(),
@@ -143,10 +150,70 @@ fn default_apply(_snap: &ChainSnapshot, changes: &[Change]) -> ApplyOutcome {
             new_display: c.value.clone(),
             new_native: 0.6,
             wire_kind: hx_catalog::Kind::Continuous,
+        };
+        steps.push(AppliedStep::Param(a.clone()));
+        edits.push(AppliedEdit::Param(a));
+    }
+
+    for op in ops {
+        match op {
+            BlockOp::SetEnabled { block, enabled } => {
+                steps.push(AppliedStep::Enabled {
+                    block_id: block.clone(),
+                    previous_enabled: !*enabled,
+                    new_enabled: *enabled,
+                });
+                edits.push(AppliedEdit::Enabled {
+                    slot: 5,
+                    block_id: block.clone(),
+                    block_name: "Brit J45 Brt".into(),
+                    previous_enabled: !*enabled,
+                    new_enabled: *enabled,
+                });
+            }
+            BlockOp::Remove { block } => {
+                structure_changed = true;
+                steps.push(AppliedStep::Removed {
+                    block_id: block.clone(),
+                    previous_name: "Brit J45 Brt".into(),
+                });
+            }
+            BlockOp::Replace { block, model, .. } => {
+                structure_changed = true;
+                added_or_replaced = true;
+                steps.push(AppliedStep::Replaced {
+                    block_id: block.clone(),
+                    previous_name: "Brit J45 Brt".into(),
+                    new_name: model.clone(),
+                });
+            }
+            BlockOp::Add { model, .. } => {
+                structure_changed = true;
+                added_or_replaced = true;
+                steps.push(AppliedStep::Added {
+                    block_id: "block6".into(),
+                    model_name: model.clone(),
+                });
+            }
+        }
+    }
+
+    let undo = if steps.is_empty() {
+        None
+    } else if structure_changed {
+        Some(UndoEntry::PresetSnapshot {
+            before_bytes: snap.raw_preset.clone().unwrap_or_else(|| vec![1, 2, 3]),
+            summary: format!("構造変更 ({} 件)", steps.len()),
         })
-        .collect();
-    ApplyOutcome {
-        applied,
+    } else {
+        Some(UndoEntry::Edits(edits))
+    };
+
+    OperationsOutcome {
+        steps,
+        undo,
+        structure_changed,
+        added_or_replaced,
         error: None,
     }
 }
@@ -175,15 +242,16 @@ impl Engine for FakeEngine {
         &mut self,
         snap: &ChainSnapshot,
         changes: &[Change],
-    ) -> Result<ApplyOutcome, String> {
-        self.applied_calls.push(changes.to_vec());
+        ops: &[BlockOp],
+    ) -> Result<OperationsOutcome, String> {
+        self.applied_calls.push((changes.to_vec(), ops.to_vec()));
         self.apply_results
             .pop_front()
-            .unwrap_or_else(|| Ok(default_apply(snap, changes)))
+            .unwrap_or_else(|| Ok(default_apply(snap, changes, ops)))
     }
 
-    async fn restore(&mut self, applied: &[AppliedChange]) -> Vec<RestoreFailure> {
-        self.restored_calls.push(applied.to_vec());
+    async fn restore(&mut self, entry: &UndoEntry) -> Vec<RestoreFailure> {
+        self.restored_calls.push(entry.clone());
         self.restore_failures.pop_front().unwrap_or_default()
     }
 
@@ -225,6 +293,7 @@ fn answer(changes: Vec<AiChange>) -> Result<AiResponse, String> {
     Ok(AiResponse {
         explanation: "説明".into(),
         changes,
+        block_operations: vec![],
         goal_reached: false,
     })
 }
@@ -233,6 +302,7 @@ fn reached() -> Result<AiResponse, String> {
     Ok(AiResponse {
         explanation: "目標に届いた".into(),
         changes: vec![],
+        block_operations: vec![],
         goal_reached: true,
     })
 }
@@ -276,8 +346,21 @@ async fn adjust(engine: &mut FakeEngine, state: &AppState) -> workflow::CycleRep
     adjust_with(engine, state, "太く").await
 }
 
-fn undo_stack(state: &AppState) -> Vec<Vec<AppliedChange>> {
+fn undo_stack(state: &AppState) -> Vec<UndoEntry> {
     state.undo_stack.lock().unwrap().clone()
+}
+
+fn undo_edits(entry: &UndoEntry) -> Vec<AppliedChange> {
+    match entry {
+        UndoEntry::Edits(edits) => edits
+            .iter()
+            .filter_map(|e| match e {
+                AppliedEdit::Param(a) => Some(a.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => panic!("expected Edits"),
+    }
 }
 
 #[tokio::test]
@@ -293,8 +376,9 @@ async fn adjust_executes_changes_and_records_them_for_undo() {
     assert_eq!(r.changes.len(), 2);
     assert_eq!(r.undo_depth, 1);
     assert_eq!(undo_stack(&s).len(), 1);
-    assert_eq!(undo_stack(&s)[0][0].previous_display, "5.0");
-    assert_eq!(undo_stack(&s)[0][1].previous_display, "7.2");
+    let u = undo_edits(&undo_stack(&s)[0]);
+    assert_eq!(u[0].previous_display, "5.0");
+    assert_eq!(u[1].previous_display, "7.2");
     assert!(e.request_text(0).contains("[block5] Brit J45 Brt"));
     let chat = s.chat.lock().unwrap().clone();
     assert_eq!(chat.len(), 2);
@@ -321,8 +405,12 @@ async fn partial_apply_failure_keeps_executed_changes_undoable() {
         change("Bass", "6.0"),
         change("Treble", "6.5"),
     ])]);
-    e.apply_results.push_back(Ok(ApplyOutcome {
-        applied: vec![applied("Bass", "5.0", "6.0")],
+    let a = applied("Bass", "5.0", "6.0");
+    e.apply_results.push_back(Ok(OperationsOutcome {
+        steps: vec![AppliedStep::Param(a.clone())],
+        undo: Some(UndoEntry::Edits(vec![AppliedEdit::Param(a)])),
+        structure_changed: false,
+        added_or_replaced: false,
         error: Some("USB 通信エラー".into()),
     }));
     let r = adjust(&mut e, &s).await;
@@ -330,7 +418,7 @@ async fn partial_apply_failure_keeps_executed_changes_undoable() {
     assert_eq!(r.error.as_deref(), Some("USB 通信エラー"));
     assert_eq!(r.changes.len(), 1);
     assert_eq!(undo_stack(&s).len(), 1);
-    assert_eq!(undo_stack(&s)[0][0].param_name, "Bass");
+    assert_eq!(undo_edits(&undo_stack(&s)[0])[0].param_name, "Bass");
     assert!(s.chat.lock().unwrap()[1].text.contains("途中で止まった"));
 }
 
@@ -411,18 +499,22 @@ async fn undo_stack_is_capped() {
     }
     let stack = undo_stack(&s);
     assert_eq!(stack.len(), MAX_UNDO_GROUPS);
-    assert_eq!(stack[0][0].new_display, "3", "古いものから捨てる");
+    assert_eq!(
+        undo_edits(&stack[0])[0].new_display,
+        "3",
+        "古いものから捨てる"
+    );
 }
 
 #[tokio::test]
 async fn revert_restores_directly_without_calling_ai() {
     let s = state();
     s.undo_stack.lock().unwrap().extend([
-        vec![applied("Drive", "3.0", "4.0")],
-        vec![
-            applied("Bass", "5.0", "6.0"),
-            applied("Treble", "7.2", "6.5"),
-        ],
+        UndoEntry::Edits(vec![AppliedEdit::Param(applied("Drive", "3.0", "4.0"))]),
+        UndoEntry::Edits(vec![
+            AppliedEdit::Param(applied("Bass", "5.0", "6.0")),
+            AppliedEdit::Param(applied("Treble", "7.2", "6.5")),
+        ]),
     ]);
     let mut e = FakeEngine::new(vec![]);
     let r = workflow::revert(&mut e, &s).await.unwrap();
@@ -440,10 +532,10 @@ async fn revert_restores_directly_without_calling_ai() {
 #[tokio::test]
 async fn revert_keeps_values_that_were_not_restored() {
     let s = state();
-    s.undo_stack.lock().unwrap().push(vec![
-        applied("Bass", "5.0", "6.0"),
-        applied("Treble", "7.2", "6.5"),
-    ]);
+    s.undo_stack.lock().unwrap().push(UndoEntry::Edits(vec![
+        AppliedEdit::Param(applied("Bass", "5.0", "6.0")),
+        AppliedEdit::Param(applied("Treble", "7.2", "6.5")),
+    ]));
     let mut e = FakeEngine::new(vec![]);
     e.restore_failures.push_back(vec![RestoreFailure {
         block: "block5".into(),
@@ -463,8 +555,113 @@ async fn revert_keeps_values_that_were_not_restored() {
         }]
     );
     assert_eq!(undo_stack(&s).len(), 1);
-    assert_eq!(undo_stack(&s)[0].len(), 1);
-    assert_eq!(undo_stack(&s)[0][0].param_name, "Bass");
+    let rem = undo_edits(&undo_stack(&s)[0]);
+    assert_eq!(rem.len(), 1);
+    assert_eq!(rem[0].param_name, "Bass");
+}
+
+#[tokio::test]
+async fn add_block_triggers_followup_to_set_initial_params_and_undoes_as_one_snapshot() {
+    let s = state();
+    let mut snap1 = sample_chain();
+    snap1.raw_preset = Some(vec![9, 8, 7]);
+    let mut snap2 = sample_chain();
+    snap2.blocks.push(BlockView {
+        id: "block6".into(),
+        slot: 6,
+        model_number: 1,
+        name: "Dynamic Hall".into(),
+        enabled: true,
+        locked: false,
+        lock_reason: None,
+        params: vec![],
+        readonly_notes: vec![],
+    });
+
+    let mut e = FakeEngine::new(vec![
+        Ok(AiResponse {
+            explanation: "Dynamic Hall を最後に追加します".into(),
+            changes: vec![],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Add,
+                block: None,
+                model: Some("Dynamic Hall".into()),
+                position: Some("end".into()),
+                stereo: Some(false),
+                amp_cab: false,
+            }],
+            goal_reached: false,
+        }),
+        Ok(AiResponse {
+            explanation: "Mix を 25% に設定します".into(),
+            changes: vec![AiChange {
+                block: "block6".into(),
+                parameter: "Mix".into(),
+                value: "25 %".into(),
+            }],
+            block_operations: vec![],
+            goal_reached: true,
+        }),
+    ]);
+    e.chains = vec![Ok(snap1), Ok(snap2)].into();
+
+    let r = adjust_with(&mut e, &s, "リバーブを足して Mix 25% に").await;
+
+    assert_eq!(r.error, None);
+    assert!(r.goal_reached);
+    assert_eq!(e.requests.len(), 2, "追加後に再取得して 2 ステップ目が走る");
+    assert!(e.request_text(1).contains("[block6] Dynamic Hall"));
+    assert_eq!(r.changes.len(), 2);
+    assert_eq!(r.changes[0].parameter, "ブロック追加");
+    assert_eq!(r.changes[0].value, "Dynamic Hall");
+    assert_eq!(r.changes[1].block, "block6");
+    assert_eq!(r.changes[1].parameter, "Mix");
+
+    // 1 つの PresetSnapshot として Undo でき、revert で戻る
+    let stack = undo_stack(&s);
+    assert_eq!(stack.len(), 1);
+    assert!(matches!(stack[0], UndoEntry::PresetSnapshot { .. }));
+    let rev = workflow::revert(&mut e, &s).await.unwrap();
+    assert_eq!(rev.error, None);
+    assert_eq!(rev.changes[0].parameter, "編集バッファ復元");
+    assert!(undo_stack(&s).is_empty());
+}
+
+#[tokio::test]
+async fn followup_step_rejects_adding_another_block() {
+    let s = state();
+    let mut e = FakeEngine::new(vec![
+        Ok(AiResponse {
+            explanation: "追加".into(),
+            changes: vec![],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Add,
+                block: None,
+                model: Some("Dynamic Hall".into()),
+                position: Some("end".into()),
+                stereo: None,
+                amp_cab: false,
+            }],
+            goal_reached: false,
+        }),
+        Ok(AiResponse {
+            explanation: "さらに追加しようとする".into(),
+            changes: vec![],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Add,
+                block: None,
+                model: Some("Glitz".into()),
+                position: Some("end".into()),
+                stereo: None,
+                amp_cab: false,
+            }],
+            goal_reached: false,
+        }),
+    ]);
+    let r = adjust_with(&mut e, &s, "リバーブ").await;
+    assert!(r.error.unwrap().contains("別のブロック追加"));
+    // ステップ 1 の追加自体は実行済みなので Undo は残る
+    assert_eq!(undo_stack(&s).len(), 1);
 }
 
 #[tokio::test]
@@ -491,7 +688,9 @@ async fn reverted_values_update_changed_parameters() {
     s.undo_stack
         .lock()
         .unwrap()
-        .push(vec![applied("Treble", "7.2", "6.5")]);
+        .push(UndoEntry::Edits(vec![AppliedEdit::Param(applied(
+            "Treble", "7.2", "6.5",
+        ))]));
     let mut e = FakeEngine::new(vec![]);
     workflow::revert(&mut e, &s).await.unwrap();
     assert_eq!(
@@ -580,8 +779,12 @@ async fn send_uses_up_the_recording_once_values_changed_even_if_it_failed_later(
         change("Bass", "6.0"),
         change("Treble", "6.5"),
     ])]);
-    e.apply_results.push_back(Ok(ApplyOutcome {
-        applied: vec![applied("Bass", "5.0", "6.0")],
+    let a = applied("Bass", "5.0", "6.0");
+    e.apply_results.push_back(Ok(OperationsOutcome {
+        steps: vec![AppliedStep::Param(a.clone())],
+        undo: Some(UndoEntry::Edits(vec![AppliedEdit::Param(a)])),
+        structure_changed: false,
+        added_or_replaced: false,
         error: Some("USB 切断".into()),
     }));
     let r = send(&mut e, &s, "太く").await.unwrap();
@@ -658,6 +861,7 @@ async fn loop_continues_when_goal_is_reached_but_values_were_still_changed() {
         Ok(AiResponse {
             explanation: "ほぼ届いた。最後に少しだけ".into(),
             changes: vec![change("Bass", "5.5")],
+            block_operations: vec![],
             goal_reached: true,
         }),
         reached(),

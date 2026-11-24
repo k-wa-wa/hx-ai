@@ -15,7 +15,8 @@ use crate::ai::{self, AiResponse, AudioFormat, ChatTurn, DoneAction, RequestInpu
 use crate::audio;
 use crate::config::{self, ResolvedSettings, StoredSettings};
 use crate::hx_device::{
-    self, AppliedChange, ApplyOutcome, ChainSnapshot, RestoreFailure, UsbHxPort,
+    self, AppliedEdit, AppliedStep, BlockOp, ChainSnapshot, OperationsOutcome, RestoreFailure,
+    UndoEntry, UsbHxPort,
 };
 use crate::macos;
 use crate::sound::{self, MAX_RECORD_SECONDS, Prepared, ReferenceClip, ReferenceTrack};
@@ -86,7 +87,7 @@ pub struct AppState {
     pub stored: Mutex<StoredSettings>,
     pub reference: Mutex<Option<Reference>>,
     /// Undo 用。1 要素が 1 サイクル分の適用記録。
-    pub undo_stack: Mutex<Vec<Vec<AppliedChange>>>,
+    pub undo_stack: Mutex<Vec<UndoEntry>>,
     pub chat: Mutex<Vec<ChatTurn>>,
     /// このセッションでアプリが変えた値 (パラメータごとに最後の値)。会話の履歴は
     /// 切り詰めて送るので、どのパラメータをどこまで動かしたかはこちらで伝える。
@@ -274,8 +275,9 @@ pub trait Engine {
         &mut self,
         snap: &ChainSnapshot,
         changes: &[hx_device::Change],
-    ) -> Result<ApplyOutcome, String>;
-    async fn restore(&mut self, applied: &[AppliedChange]) -> Vec<RestoreFailure>;
+        ops: &[BlockOp],
+    ) -> Result<OperationsOutcome, String>;
+    async fn restore(&mut self, entry: &UndoEntry) -> Vec<RestoreFailure>;
     /// 自動ループ用に録音する。
     async fn record(&mut self) -> Result<Prepared, String>;
     /// 自動ループの 1 回分の結果を画面に伝える。
@@ -352,29 +354,54 @@ impl Engine for TauriEngine {
         &mut self,
         snap: &ChainSnapshot,
         changes: &[hx_device::Change],
-    ) -> Result<ApplyOutcome, String> {
+        ops: &[BlockOp],
+    ) -> Result<OperationsOutcome, String> {
         let hx = self.hx.clone();
         let snap = snap.clone();
         let changes = changes.to_vec();
-        blocking(move || with_usb(&hx, |p| hx_device::apply_changes(p, &snap, &changes))).await
+        let ops = ops.to_vec();
+        blocking(move || {
+            with_usb(&hx, |p| {
+                hx_device::apply_operations(p, &snap, &changes, &ops)
+            })
+        })
+        .await
     }
 
-    async fn restore(&mut self, applied: &[AppliedChange]) -> Vec<RestoreFailure> {
+    async fn restore(&mut self, entry: &UndoEntry) -> Vec<RestoreFailure> {
         let hx = self.hx.clone();
-        let to_restore = applied.to_vec();
-        blocking(move || with_usb(&hx, |p| Ok(hx_device::restore_changes(p, &to_restore))))
+        let to_restore = entry.clone();
+        blocking(move || with_usb(&hx, |p| Ok(hx_device::restore_undo(p, &to_restore))))
             .await
-            .unwrap_or_else(|reason| {
-                applied
+            .unwrap_or_else(|reason| match entry {
+                UndoEntry::Edits(edits) => edits
                     .iter()
                     .rev()
-                    .map(|a| RestoreFailure {
-                        block: a.block_id.clone(),
-                        parameter: a.param_name.clone(),
-                        value: a.previous_display.clone(),
-                        reason: reason.clone(),
+                    .map(|e| match e {
+                        AppliedEdit::Param(a) => RestoreFailure {
+                            block: a.block_id.clone(),
+                            parameter: a.param_name.clone(),
+                            value: a.previous_display.clone(),
+                            reason: reason.clone(),
+                        },
+                        AppliedEdit::Enabled {
+                            block_id,
+                            previous_enabled,
+                            ..
+                        } => RestoreFailure {
+                            block: block_id.clone(),
+                            parameter: "状態 (ON/OFF)".into(),
+                            value: if *previous_enabled { "ON" } else { "OFF" }.into(),
+                            reason: reason.clone(),
+                        },
                     })
-                    .collect()
+                    .collect(),
+                UndoEntry::PresetSnapshot { summary, .. } => vec![RestoreFailure {
+                    block: "プリセット".into(),
+                    parameter: "編集バッファ復元".into(),
+                    value: summary.clone(),
+                    reason,
+                }],
             })
     }
 
@@ -404,12 +431,74 @@ fn ensure_microphone_permission() -> Result<(), String> {
     Err("マイク の権限が必要です。許可してから、もう一度実行してください".into())
 }
 
-fn done_from_applied(a: &AppliedChange) -> DoneAction {
-    DoneAction {
-        block: a.block_id.clone(),
-        parameter: a.param_name.clone(),
-        value: a.new_display.clone(),
-        previous_value: a.previous_display.clone(),
+fn on_off_label(enabled: bool) -> String {
+    if enabled { "ON" } else { "OFF" }.into()
+}
+
+fn done_from_step(step: &AppliedStep) -> DoneAction {
+    match step {
+        AppliedStep::Param(a) => DoneAction {
+            block: a.block_id.clone(),
+            parameter: a.param_name.clone(),
+            value: a.new_display.clone(),
+            previous_value: a.previous_display.clone(),
+        },
+        AppliedStep::Enabled {
+            block_id,
+            previous_enabled,
+            new_enabled,
+        } => DoneAction {
+            block: block_id.clone(),
+            parameter: "状態 (ON/OFF)".into(),
+            value: on_off_label(*new_enabled),
+            previous_value: on_off_label(*previous_enabled),
+        },
+        AppliedStep::Removed {
+            block_id,
+            previous_name,
+        } => DoneAction {
+            block: block_id.clone(),
+            parameter: "ブロック削除".into(),
+            value: "(削除)".into(),
+            previous_value: previous_name.clone(),
+        },
+        AppliedStep::Replaced {
+            block_id,
+            previous_name,
+            new_name,
+        } => DoneAction {
+            block: block_id.clone(),
+            parameter: "モデル変更".into(),
+            value: new_name.clone(),
+            previous_value: previous_name.clone(),
+        },
+        AppliedStep::Added {
+            block_id,
+            model_name,
+        } => DoneAction {
+            block: block_id.clone(),
+            parameter: "ブロック追加".into(),
+            value: model_name.clone(),
+            previous_value: "(空き)".into(),
+        },
+    }
+}
+
+fn to_device_changes(ai_changes: &[ai::AiChange]) -> Vec<hx_device::Change> {
+    ai_changes
+        .iter()
+        .map(|c| hx_device::Change {
+            block: c.block.clone(),
+            parameter: c.parameter.clone(),
+            value: c.value.clone(),
+        })
+        .collect()
+}
+
+fn count_undo_items(entry: &UndoEntry) -> usize {
+    match entry {
+        UndoEntry::Edits(edits) => edits.len(),
+        UndoEntry::PresetSnapshot { .. } => 1,
     }
 }
 
@@ -478,7 +567,7 @@ pub async fn adjust<E: Engine>(
     let changed = state.changed.lock().map_err(|e| e.to_string())?.clone();
 
     let mut report = CycleReport::empty(req.recording.map(|r| r.peak_dbfs));
-    let mut applied_for_undo: Vec<AppliedChange> = Vec::new();
+    let mut undo_for_stack: Option<UndoEntry> = None;
 
     let result: Result<(), String> = async {
         engine.progress("capture", "HX Stomp から現在の設定を取得中".into());
@@ -506,33 +595,103 @@ pub async fn adjust<E: Engine>(
         ai::validate(&resp)?;
         report.goal_reached = resp.goal_reached;
 
-        if resp.changes.is_empty() {
+        if resp.changes.is_empty() && resp.block_operations.is_empty() {
             return Ok(());
         }
         if req.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
             return Err(STOPPED_BEFORE_EXECUTE.to_string());
         }
 
-        engine.progress(
-            "operate",
-            format!("HX Stomp に反映中 ({} 件)", resp.changes.len()),
-        );
-        let device_changes: Vec<hx_device::Change> = resp
-            .changes
-            .iter()
-            .map(|c| hx_device::Change {
-                block: c.block.clone(),
-                parameter: c.parameter.clone(),
-                value: c.value.clone(),
-            })
-            .collect();
-        let outcome = engine.apply(&snap, &device_changes).await?;
-        for a in &outcome.applied {
-            report.changes.push(done_from_applied(a));
+        let total_count = resp.changes.len() + resp.block_operations.len();
+        engine.progress("operate", format!("HX Stomp に反映中 ({total_count} 件)"));
+        let device_changes = to_device_changes(&resp.changes);
+        let device_ops = ai::to_device_block_ops(&resp.block_operations)?;
+        let outcome = engine.apply(&snap, &device_changes, &device_ops).await?;
+        for s in &outcome.steps {
+            report.changes.push(done_from_step(s));
         }
-        applied_for_undo = outcome.applied;
+        undo_for_stack = outcome.undo;
         if let Some(e) = outcome.error {
             return Err(e);
+        }
+
+        // ブロック追加・モデル差し替えを行ったときは最新チェーンを読み直し、同じ送信内で初期パラメータ調整へ進む
+        if outcome.added_or_replaced {
+            if req.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+                return Err(STOPPED_BEFORE_EXECUTE.to_string());
+            }
+            engine.progress(
+                "capture",
+                "追加・変更したブロックのパラメータを取得中".into(),
+            );
+            let snap2 = engine.read_chain().await?;
+            let chain_text2 = hx_device::render_chain(&snap2);
+
+            let mut follow_history = history.clone();
+            follow_history.push(ChatTurn {
+                role: "user".into(),
+                text: instruction.to_string(),
+            });
+            follow_history.push(ChatTurn {
+                role: "assistant".into(),
+                text: resp.explanation.clone(),
+            });
+            let mut follow_changed = changed.clone();
+            record_changes(&mut follow_changed, &report.changes);
+
+            let follow_instruction = format!(
+                "前の応答でブロックの追加・モデル変更を実行した直後の最新チェーンである。元の依頼「{}」に沿って、新しく追加・変更されたブロックの初期パラメータを調整する必要があれば changes で指定せよ (追加・削除・モデル変更の block_operations は指定しないこと。調整不要なら changes は空にし、最終的な goal_reached を返せ)。",
+                instruction.trim()
+            );
+
+            engine.progress("ai", format!("AI ({model}) で初期パラメータを確認中"));
+            let body2 = ai::build_request(
+                model,
+                &RequestInput {
+                    instruction: &follow_instruction,
+                    history: &follow_history,
+                    reference_audio: None,
+                    recording_wav: None,
+                    chain_text: &chain_text2,
+                    changed_parameters: &follow_changed,
+                },
+            );
+            let resp2 = engine.ask(&body2).await?;
+            if !resp2.explanation.trim().is_empty() {
+                report
+                    .explanations
+                    .push(resp2.explanation.trim().to_string());
+            }
+            ai::validate(&resp2)?;
+            let ops2 = ai::to_device_block_ops(&resp2.block_operations)?;
+            if ops2.iter().any(|op| {
+                matches!(
+                    op,
+                    BlockOp::Add { .. } | BlockOp::Remove { .. } | BlockOp::Replace { .. }
+                )
+            }) {
+                return Err("追加・差し替え直後のステップでは別のブロック追加・削除・差し替えを行えません".into());
+            }
+            report.goal_reached = resp2.goal_reached;
+
+            if !resp2.changes.is_empty() || !ops2.is_empty() {
+                if req.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+                    return Err(STOPPED_BEFORE_EXECUTE.to_string());
+                }
+                let count2 = resp2.changes.len() + ops2.len();
+                engine.progress("operate", format!("HX Stomp に反映中 ({count2} 件)"));
+                let changes2 = to_device_changes(&resp2.changes);
+                let outcome2 = engine.apply(&snap2, &changes2, &ops2).await?;
+                for s in &outcome2.steps {
+                    report.changes.push(done_from_step(s));
+                }
+                if undo_for_stack.is_none() {
+                    undo_for_stack = outcome2.undo;
+                }
+                if let Some(e) = outcome2.error {
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }
@@ -544,9 +703,9 @@ pub async fn adjust<E: Engine>(
         &mut *state.changed.lock().map_err(|e| e.to_string())?,
         &report.changes,
     );
-    if !applied_for_undo.is_empty() {
+    if let Some(entry) = undo_for_stack {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
-        stack.push(applied_for_undo);
+        stack.push(entry);
         if stack.len() > MAX_UNDO_GROUPS {
             stack.remove(0);
         }
@@ -578,10 +737,10 @@ pub async fn adjust<E: Engine>(
     Ok(report)
 }
 
-/// 直前のサイクルの変更を元に戻す (AI は呼ばず、記録した元の生値を直接書き戻す)。
+/// 直前のサイクルの変更を元に戻す (AI は呼ばず、記録した元の生値やプリセット状態を直接書き戻す)。
 /// 戻しきれなかった値は、もう一度 Undo できるように残す。
 pub async fn revert<E: Engine>(engine: &mut E, state: &AppState) -> Result<CycleReport, String> {
-    let applied = state
+    let entry = state
         .undo_stack
         .lock()
         .map_err(|e| e.to_string())?
@@ -592,32 +751,78 @@ pub async fn revert<E: Engine>(engine: &mut E, state: &AppState) -> Result<Cycle
     let mut report = CycleReport::empty(None);
     engine.progress(
         "operate",
-        format!("HX Stomp の変更を元に戻しています ({} 件)", applied.len()),
+        format!(
+            "HX Stomp の変更を元に戻しています ({} 件)",
+            count_undo_items(&entry)
+        ),
     );
-    let failures = engine.restore(&applied).await;
-    let failed_keys: HashSet<(usize, usize)> = failures
-        .iter()
-        .filter_map(|f| {
-            applied
-                .iter()
-                .find(|a| a.block_id == f.block && a.param_name == f.parameter)
-                .map(|a| (a.slot, a.param_index))
-        })
-        .collect();
+    let failures = engine.restore(&entry).await;
 
-    let mut remaining = Vec::new();
-    for a in applied {
-        if failed_keys.contains(&(a.slot, a.param_index)) {
-            remaining.push(a);
-        } else {
-            report.changes.push(DoneAction {
-                block: a.block_id,
-                parameter: a.param_name,
-                value: a.previous_display,
-                previous_value: a.new_display,
-            });
+    let remaining_entry = match entry {
+        UndoEntry::Edits(edits) => {
+            let failed_keys: HashSet<(usize, String)> = failures
+                .iter()
+                .map(|f| (0usize, format!("{}:{}", f.block, f.parameter)))
+                .collect();
+            let is_failed = |block: &str, param: &str| {
+                failed_keys.contains(&(0usize, format!("{block}:{param}")))
+            };
+            let mut rem = Vec::new();
+            for edit in edits {
+                match &edit {
+                    AppliedEdit::Param(a) => {
+                        if is_failed(&a.block_id, &a.param_name) {
+                            rem.push(edit);
+                        } else {
+                            report.changes.push(DoneAction {
+                                block: a.block_id.clone(),
+                                parameter: a.param_name.clone(),
+                                value: a.previous_display.clone(),
+                                previous_value: a.new_display.clone(),
+                            });
+                        }
+                    }
+                    AppliedEdit::Enabled {
+                        block_id,
+                        previous_enabled,
+                        new_enabled,
+                        ..
+                    } => {
+                        if is_failed(block_id, "状態 (ON/OFF)") {
+                            rem.push(edit);
+                        } else {
+                            report.changes.push(DoneAction {
+                                block: block_id.clone(),
+                                parameter: "状態 (ON/OFF)".into(),
+                                value: on_off_label(*previous_enabled),
+                                previous_value: on_off_label(*new_enabled),
+                            });
+                        }
+                    }
+                }
+            }
+            (!rem.is_empty()).then_some(UndoEntry::Edits(rem))
         }
-    }
+        UndoEntry::PresetSnapshot {
+            before_bytes,
+            summary,
+        } => {
+            if failures.is_empty() {
+                report.changes.push(DoneAction {
+                    block: "プリセット".into(),
+                    parameter: "編集バッファ復元".into(),
+                    value: "変更前の状態".into(),
+                    previous_value: summary,
+                });
+                None
+            } else {
+                Some(UndoEntry::PresetSnapshot {
+                    before_bytes,
+                    summary,
+                })
+            }
+        }
+    };
 
     record_changes(
         &mut *state.changed.lock().map_err(|e| e.to_string())?,
@@ -636,8 +841,8 @@ pub async fn revert<E: Engine>(engine: &mut E, state: &AppState) -> Result<Cycle
     {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
         stack.pop();
-        if !remaining.is_empty() {
-            stack.push(remaining);
+        if let Some(rem) = remaining_entry {
+            stack.push(rem);
         }
     }
     if !not_restored.is_empty() {
