@@ -237,6 +237,17 @@ impl Desktop for MacDesktop {
             .key(Key::Return, Direction::Click)
             .map_err(|e| format!("Enter を押せません: {e}"))
     }
+    fn press_escape(&mut self) -> Result<(), String> {
+        self.enigo()?
+            .key(Key::Escape, Direction::Click)
+            .map_err(|e| format!("Escape を押せません: {e}"))
+    }
+    fn capture_window(
+        &mut self,
+        window: &crate::capture::TargetWindow,
+    ) -> Result<image::RgbaImage, String> {
+        capture::capture_image(window.window_id)
+    }
     fn wait(&mut self, d: Duration) {
         std::thread::sleep(d);
     }

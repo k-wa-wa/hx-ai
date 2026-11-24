@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use crate::ai::{ActionKind, AiAction, DoneAction};
 use crate::capture::TargetWindow;
+use image::RgbaImage;
+
 use crate::geometry::{self, Point, Rect, ScreenWindow};
+use crate::screen_check::{self, Refusal};
 
 const AFTER_ACTIVATE: Duration = Duration::from_millis(300);
 const AFTER_MOVE: Duration = Duration::from_millis(80);
@@ -39,6 +42,9 @@ pub trait Desktop {
     fn click(&mut self) -> Result<(), String>;
     fn type_text(&mut self, text: &str) -> Result<(), String>;
     fn press_enter(&mut self) -> Result<(), String>;
+    fn press_escape(&mut self) -> Result<(), String>;
+    /// ウィンドウを撮る (ダブルクリックの前後を比べるため)。
+    fn capture_window(&mut self, window: &TargetWindow) -> Result<RgbaImage, String>;
     fn wait(&mut self, d: Duration);
 }
 
@@ -142,12 +148,14 @@ fn execute_inner(
 
         match a.kind {
             ActionKind::SetValue => {
+                let before = desktop.capture_window(window)?;
                 desktop.click()?;
                 desktop.wait(BETWEEN_CLICKS);
                 desktop.click()?;
                 desktop.wait(AFTER_DOUBLE_CLICK);
                 // ダブルクリックで別のウィンドウが開いていないかを確かめてから打ち込む
                 ensure_frontmost(desktop, window.pid as i32)?;
+                ensure_field_opened(desktop, window, p, &before)?;
                 desktop.type_text(a.value.trim())?;
                 desktop.wait(AFTER_TYPING);
                 desktop.press_enter()?;
@@ -162,6 +170,37 @@ fn execute_inner(
         last_mouse = Some((x, y));
     }
     Ok(())
+}
+
+/// ダブルクリックの前後を撮り比べ、数値欄の入力が始まったことを確かめる。
+/// ダイアログや一覧が開いていたら Escape で閉じ、どちらにしても打ち込まずにエラーにする。
+fn ensure_field_opened(
+    desktop: &mut dyn Desktop,
+    window: &TargetWindow,
+    p: Point,
+    before: &RgbaImage,
+) -> Result<(), String> {
+    let after = desktop.capture_window(window)?;
+    let scale_x = after.width() as f64 / window.rect.width;
+    let scale_y = after.height() as f64 / window.rect.height;
+    let center = (
+        ((p.x - window.rect.x) * scale_x).max(0.0) as u32,
+        ((p.y - window.rect.y) * scale_y).max(0.0) as u32,
+    );
+    let half = (
+        (screen_check::NEAR_HALF_WIDTH * scale_x) as u32,
+        (screen_check::NEAR_HALF_HEIGHT * scale_y) as u32,
+    );
+    let d = screen_check::diff(before, &after, center, half)?;
+    match screen_check::check_double_click(&d) {
+        Ok(()) => Ok(()),
+        Err(r) => {
+            if let Refusal::Opened(_) = r {
+                desktop.press_escape()?;
+            }
+            Err(r.message().to_string())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -180,7 +219,11 @@ pub mod fake {
         Click,
         Type(String),
         Enter,
+        Escape,
     }
+
+    const SCREEN: image::Rgba<u8> = image::Rgba([30, 30, 34, 255]);
+    const FIELD: image::Rgba<u8> = image::Rgba([220, 220, 225, 255]);
 
     /// 偽のデスクトップの状態。テストから書き換えて「途中で何かが起きた」を再現する。
     pub struct World {
@@ -191,6 +234,21 @@ pub mod fake {
         /// HX Edit より手前にあるウィンドウ。
         pub overlays: Vec<ScreenWindow>,
         pub mouse: (i32, i32),
+        /// ウィンドウの中身 (1 ポイント = 1 ピクセル)。
+        pub screen: RgbaImage,
+        /// クリックすると、その位置に入力欄が開いたように描く。
+        pub click_opens_field: bool,
+    }
+
+    impl World {
+        /// ウィンドウ内の (x, y) ポイントから幅 w・高さ h の矩形を塗る (ダイアログなどの再現に使う)。
+        pub fn paint(&mut self, x: u32, y: u32, w: u32, h: u32) {
+            for yy in y..(y + h).min(self.screen.height()) {
+                for xx in x..(x + w).min(self.screen.width()) {
+                    self.screen.put_pixel(xx, yy, FIELD);
+                }
+            }
+        }
     }
 
     type Hook = Box<dyn FnMut(&Ev, &mut World)>;
@@ -222,6 +280,8 @@ pub mod fake {
                     rect: Some(hx_rect()),
                     overlays: vec![],
                     mouse: (0, 0),
+                    screen: RgbaImage::from_pixel(1000, 1000, SCREEN),
+                    click_opens_field: true,
                 },
                 events: vec![],
                 hook: None,
@@ -289,6 +349,16 @@ pub mod fake {
             Ok(())
         }
         fn click(&mut self) -> Result<(), String> {
+            if self.world.click_opens_field {
+                let (mx, my) = self.world.mouse;
+                let r = self.world.rect.unwrap_or_else(hx_rect);
+                let (x, y) = (
+                    (mx as f64 - r.x).max(0.0) as u32,
+                    (my as f64 - r.y).max(0.0) as u32,
+                );
+                self.world
+                    .paint(x.saturating_sub(15), y.saturating_sub(6), 30, 12);
+            }
             self.record(Ev::Click);
             Ok(())
         }
@@ -297,8 +367,21 @@ pub mod fake {
             Ok(())
         }
         fn press_enter(&mut self) -> Result<(), String> {
+            // 値が確定して入力欄が閉じる
+            self.world.screen = RgbaImage::from_pixel(
+                self.world.screen.width(),
+                self.world.screen.height(),
+                SCREEN,
+            );
             self.record(Ev::Enter);
             Ok(())
+        }
+        fn press_escape(&mut self) -> Result<(), String> {
+            self.record(Ev::Escape);
+            Ok(())
+        }
+        fn capture_window(&mut self, _window: &TargetWindow) -> Result<RgbaImage, String> {
+            Ok(self.world.screen.clone())
         }
         fn wait(&mut self, _d: Duration) {}
     }
@@ -558,5 +641,75 @@ mod tests {
             "別のウィンドウに値を打ち込まない"
         );
         assert!(out.done.is_empty());
+    }
+
+    // ---- ダブルクリックの前後の撮り比べ ----
+
+    #[test]
+    fn a_dialog_opened_by_the_double_click_is_closed_and_nothing_is_typed() {
+        // 実機で起きたこと: 数値欄の上の星マークを押して「Save As Favorite」が開いた
+        let mut clicks = 0;
+        let mut d = FakeDesktop::new().on_event(move |ev, w| {
+            if *ev == Ev::Click {
+                clicks += 1;
+                if clicks == 2 {
+                    w.paint(300, 200, 400, 400);
+                }
+            }
+        });
+        let out = execute(
+            &mut d,
+            &[set_value(500.0, 500.0, "7.0"), set_value(500.0, 600.0, "5")],
+            &window(),
+        );
+        let e = out.error.unwrap();
+        assert!(e.contains("周り以外の画面が大きく変わりました"), "{e}");
+        assert!(out.done.is_empty(), "変えていないので Undo に積まない");
+        let ev = d.input_events();
+        assert!(!ev.iter().any(|e| matches!(e, Ev::Type(_))), "打ち込まない");
+        assert!(!ev.contains(&Ev::Enter));
+        assert_eq!(ev.last(), Some(&Ev::Escape), "開いたものを閉じる");
+    }
+
+    #[test]
+    fn nothing_is_typed_when_the_double_click_opens_no_field() {
+        let mut d = FakeDesktop::new();
+        d.world.click_opens_field = false;
+        let out = execute(&mut d, &[set_value(500.0, 500.0, "7.0")], &window());
+        assert!(out.error.unwrap().contains("入力欄が開きませんでした"));
+        let ev = d.input_events();
+        assert!(!ev.iter().any(|e| matches!(e, Ev::Type(_))));
+        assert!(!ev.contains(&Ev::Escape), "何も開いていないので閉じない");
+    }
+
+    #[test]
+    fn a_field_opening_in_place_lets_the_value_be_typed() {
+        let mut d = FakeDesktop::new();
+        let out = execute(&mut d, &[set_value(500.0, 500.0, "7.0")], &window());
+        assert_eq!(out.error, None);
+        assert!(d.events.contains(&Ev::Type("7.0".into())));
+    }
+
+    #[test]
+    fn the_near_area_follows_the_window_position_and_scale() {
+        // ウィンドウを (100, 50) にずらし、撮った画像は 2 倍 (Retina)。
+        // 入力欄の変化はクリックした所の周りにあるので、許される
+        let rect = Rect {
+            x: 100.0,
+            y: 50.0,
+            width: 500.0,
+            height: 500.0,
+        };
+        let mut d = FakeDesktop::new().on_event(|ev, w| {
+            if *ev == Ev::Click {
+                // (400, 300) ポイント = ウィンドウ内 (300, 250) = 画像 (600, 500)
+                w.paint(580, 490, 40, 20);
+            }
+        });
+        d.world.rect = Some(rect);
+        d.world.click_opens_field = false;
+        let w = TargetWindow { rect, ..window() };
+        let out = execute(&mut d, &[set_value(600.0, 500.0, "7.0")], &w);
+        assert_eq!(out.error, None, "周りの変化として数える");
     }
 }

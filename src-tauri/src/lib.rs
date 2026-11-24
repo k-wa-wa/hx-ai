@@ -11,6 +11,7 @@ mod config;
 mod geometry;
 mod macos;
 mod permission;
+mod screen_check;
 mod sound;
 mod workflow;
 #[cfg(test)]
