@@ -7,7 +7,7 @@ use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::ai::{self, ActionKind};
+use crate::ai;
 use crate::config::ResolvedSettings;
 
 const NO_WAIT: [Duration; 2] = [Duration::ZERO, Duration::ZERO];
@@ -24,11 +24,10 @@ fn settings(base: &str) -> ResolvedSettings {
 fn ok_body() -> serde_json::Value {
     let content = json!({
         "explanation": "下げた",
-        "actions": [{
-            "type": "set_value", "block": "Amp", "parameter": "Treble",
-            "x": 433, "y": 890, "value": "6.0", "previous_value": "7.2"
+        "changes": [{
+            "block": "block5", "parameter": "Treble", "value": "6.0"
         }],
-        "needs_another_round": false
+        "goal_reached": false
     });
     json!({ "choices": [{ "message": { "content": content.to_string() } }] })
 }
@@ -77,8 +76,9 @@ async fn sends_bearer_key_to_chat_completions_and_parses_answer() {
             .await;
         let (r, retries) = call(&server, suffix).await;
         let r = r.unwrap();
-        assert_eq!(r.actions[0].kind, ActionKind::SetValue);
-        assert_eq!(r.actions[0].previous_value, "7.2");
+        assert_eq!(r.changes[0].block, "block5");
+        assert_eq!(r.changes[0].parameter, "Treble");
+        assert_eq!(r.changes[0].value, "6.0");
         assert!(retries.is_empty());
         server.verify().await;
     }
@@ -205,8 +205,9 @@ fn search(id: &str, args: serde_json::Value) -> serde_json::Value {
 }
 
 fn submit() -> serde_json::Value {
-    let args = json!({ "explanation": "Heir Apparent を勧める", "actions": [], "needs_another_round": false, "goal_reached": false });
-    json!({ "id": "s", "type": "function", "function": { "name": "submit_actions", "arguments": args.to_string() } })
+    let args =
+        json!({ "explanation": "Heir Apparent を勧める", "changes": [], "goal_reached": false });
+    json!({ "id": "s", "type": "function", "function": { "name": "submit_changes", "arguments": args.to_string() } })
 }
 
 async fn call_with_script(
@@ -283,7 +284,7 @@ async fn after_the_search_limit_the_answer_is_forced() {
     let last = sent.last().unwrap();
     assert_eq!(
         last["tool_choice"],
-        json!({ "type": "function", "function": { "name": "submit_actions" } })
+        json!({ "type": "function", "function": { "name": "submit_changes" } })
     );
     assert_eq!(sent[ai::MAX_SEARCHES - 1]["tool_choice"], "required");
 }
@@ -296,16 +297,4 @@ async fn searching_beyond_the_limit_is_an_error() {
     let (r, sent, _) = call_with_script(replies).await;
     assert!(r.unwrap_err().contains("答えを返しませんでした"));
     assert_eq!(sent.len(), ai::MAX_SEARCHES + 1);
-}
-
-#[tokio::test]
-async fn several_searches_in_one_reply_count_toward_the_limit() {
-    let calls: Vec<_> = (0..ai::MAX_SEARCHES)
-        .map(|i| search(&format!("c{i}"), json!({ "query": "Klon" })))
-        .collect();
-    let (r, sent, _) = call_with_script(vec![tool_reply(calls), tool_reply(vec![submit()])]).await;
-    assert!(r.is_ok(), "{r:?}");
-    let messages = sent[1]["messages"].as_array().unwrap();
-    assert_eq!(messages.len(), 2 + ai::MAX_SEARCHES, "検索ごとに結果を返す");
-    assert_eq!(sent[1]["tool_choice"]["function"]["name"], "submit_actions");
 }

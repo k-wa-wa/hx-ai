@@ -1,7 +1,8 @@
-//! 1 サイクル (キャプチャ → AI → 自動操作) と Undo、自動ループの流れ。
+//! 1 サイクル (チェーン取得 → AI → USB 書き込み) と Undo、自動ループの流れ。
 //!
-//! 録音・キャプチャ・AI・自動操作は `Engine` トレイトの向こうに置き、テストでは偽物に差し替える。
+//! 録音・USB 通信・AI は `Engine` トレイトの向こうに置き、テストでは偽物に差し替える。
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,25 +11,18 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
-use crate::ai::{
-    self, ActionKind, AiAction, AiResponse, AudioFormat, ChatTurn, DoneAction, Purpose,
-    RequestInput, RestoreTarget,
-};
+use crate::ai::{self, AiResponse, AudioFormat, ChatTurn, DoneAction, RequestInput, RestoreTarget};
 use crate::audio;
-use crate::automation::{self, Outcome};
-use crate::capture::{self, Screenshot, TargetWindow};
 use crate::config::{self, ResolvedSettings, StoredSettings};
+use crate::hx_device::{
+    self, AppliedChange, ApplyOutcome, ChainSnapshot, RestoreFailure, UsbHxPort,
+};
 use crate::macos;
-use crate::permission;
 use crate::sound::{self, MAX_RECORD_SECONDS, Prepared, ReferenceClip, ReferenceTrack};
-
-/// 1 サイクルで撮り直して AI に聞き直す回数の上限。
-pub const MAX_ROUNDS: usize = 4;
 
 /// リファレンス音源ファイルの上限。AI には切り出した区間しか送らないので、
 /// 上限は読み込みとプレビューの重さで決める。数分の WAV (数十 MB) は受け付ける。
 pub const MAX_REFERENCE_BYTES: usize = 50 * 1024 * 1024;
-// 数分の WAV (44.1kHz ステレオで 1 分 約 10MB) を受け付けること
 const _: () = assert!(MAX_REFERENCE_BYTES >= 50 * 1024 * 1024);
 
 /// Undo 履歴に残す数。
@@ -91,10 +85,10 @@ pub struct AppState {
     pub settings_path: std::path::PathBuf,
     pub stored: Mutex<StoredSettings>,
     pub reference: Mutex<Option<Reference>>,
-    /// Undo 用。1 要素が 1 サイクル分の「戻す値」の一覧。
-    pub undo_stack: Mutex<Vec<Vec<RestoreTarget>>>,
+    /// Undo 用。1 要素が 1 サイクル分の適用記録。
+    pub undo_stack: Mutex<Vec<Vec<AppliedChange>>>,
     pub chat: Mutex<Vec<ChatTurn>>,
-    /// このセッションでアプリが打ち込んだ値 (パラメータごとに最後の値)。会話の履歴は
+    /// このセッションでアプリが変えた値 (パラメータごとに最後の値)。会話の履歴は
     /// 切り詰めて送るので、どのパラメータをどこまで動かしたかはこちらで伝える。
     pub changed: Mutex<Vec<RestoreTarget>>,
     pub busy: AtomicBool,
@@ -106,6 +100,8 @@ pub struct AppState {
     pub loop_stop: Arc<AtomicBool>,
     /// 自動ループ中に追加された指示。
     pub loop_extra: Arc<Mutex<Vec<String>>>,
+    /// HX Stomp との USB 接続 (1 セッションを保持して再接続待ちを省く)。
+    pub hx: Arc<Mutex<Option<UsbHxPort>>>,
 }
 
 impl AppState {
@@ -122,6 +118,7 @@ impl AppState {
             pending: Mutex::new(None),
             loop_stop: Arc::new(AtomicBool::new(false)),
             loop_extra: Arc::new(Mutex::new(Vec::new())),
+            hx: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -134,6 +131,15 @@ impl AppState {
 
     pub fn undo_depth(&self) -> usize {
         self.undo_stack.lock().map(|s| s.len()).unwrap_or(0)
+    }
+
+    #[allow(dead_code)]
+    pub fn disconnect_hx(&self) {
+        if let Ok(mut guard) = self.hx.lock()
+            && let Some(port) = guard.as_mut()
+        {
+            port.disconnect();
+        }
     }
 }
 
@@ -157,7 +163,6 @@ impl Drop for BusyGuard<'_> {
 #[derive(Debug, Clone, Serialize)]
 pub struct CycleReport {
     pub explanations: Vec<String>,
-    /// 実行した値の変更 (ブロック選択は含めない)。
     pub changes: Vec<DoneAction>,
     /// 途中で止まった理由。最後まで終わったときは None。
     pub error: Option<String>,
@@ -168,7 +173,6 @@ pub struct CycleReport {
     pub not_restored: Vec<RestoreTarget>,
     /// AI が「目標に届いた。これ以上変えなくてよい」と判断したか。
     pub goal_reached: bool,
-    /// 自動操作がガードレール (最前面・マウスの介入など) で止まったか。
     pub interrupted: bool,
     /// 送った録音が使われずに残っているか (手動モードで、何も変えずに失敗したとき)。
     pub recording_kept: bool,
@@ -181,7 +185,7 @@ impl CycleReport {
             changes: vec![],
             error: None,
             recording_peak_dbfs,
-            rounds: 0,
+            rounds: 1,
             undo_depth: 0,
             not_restored: vec![],
             goal_reached: false,
@@ -228,13 +232,14 @@ pub struct LoopIteration {
 #[allow(async_fn_in_trait)]
 pub trait Engine {
     fn progress(&self, stage: &str, message: String);
-    async fn capture(&mut self) -> Result<Screenshot, String>;
+    async fn read_chain(&mut self) -> Result<ChainSnapshot, String>;
     async fn ask(&mut self, body: &Value) -> Result<AiResponse, String>;
-    async fn execute(
+    async fn apply(
         &mut self,
-        actions: Vec<AiAction>,
-        window: TargetWindow,
-    ) -> Result<Outcome, String>;
+        snap: &ChainSnapshot,
+        changes: &[hx_device::Change],
+    ) -> Result<ApplyOutcome, String>;
+    async fn restore(&mut self, applied: &[AppliedChange]) -> Vec<RestoreFailure>;
     /// 自動ループ用に録音する。
     async fn record(&mut self) -> Result<Prepared, String>;
     /// 自動ループの 1 回分の結果を画面に伝える。
@@ -267,10 +272,23 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| format!("内部エラー: {e}"))?
 }
 
-/// 本物: cpal で録り、xcap で撮り、AI API を呼び、enigo で操作する。
+fn with_usb<T>(
+    hx: &Mutex<Option<UsbHxPort>>,
+    f: impl FnOnce(&mut UsbHxPort) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut guard = hx.lock().map_err(|e| e.to_string())?;
+    if guard.is_none() {
+        *guard = Some(UsbHxPort::new()?);
+    }
+    let port = guard.as_mut().expect("UsbHxPort initialized");
+    f(port)
+}
+
+/// 本物: cpal で録り、hx_device で USB 読み書きし、AI API を呼ぶ。
 struct TauriEngine {
     app: AppHandle,
     settings: ResolvedSettings,
+    hx: Arc<Mutex<Option<UsbHxPort>>>,
     /// 自動ループで録音するデバイスと秒数。
     device_id: Option<String>,
     seconds: u32,
@@ -281,9 +299,9 @@ impl Engine for TauriEngine {
         emit_progress(&self.app, stage, message);
     }
 
-    async fn capture(&mut self) -> Result<Screenshot, String> {
-        let target_app = self.settings.target_app.clone();
-        blocking(move || capture::capture(&target_app)).await
+    async fn read_chain(&mut self) -> Result<ChainSnapshot, String> {
+        let hx = self.hx.clone();
+        blocking(move || with_usb(&hx, hx_device::HxPort::read_snapshot)).await
     }
 
     async fn ask(&mut self, body: &Value) -> Result<AiResponse, String> {
@@ -294,19 +312,34 @@ impl Engine for TauriEngine {
         .await
     }
 
-    async fn execute(
+    async fn apply(
         &mut self,
-        actions: Vec<AiAction>,
-        window: TargetWindow,
-    ) -> Result<Outcome, String> {
-        blocking(move || {
-            Ok(automation::execute(
-                &mut macos::MacDesktop::default(),
-                &actions,
-                &window,
-            ))
-        })
-        .await
+        snap: &ChainSnapshot,
+        changes: &[hx_device::Change],
+    ) -> Result<ApplyOutcome, String> {
+        let hx = self.hx.clone();
+        let snap = snap.clone();
+        let changes = changes.to_vec();
+        blocking(move || with_usb(&hx, |p| hx_device::apply_changes(p, &snap, &changes))).await
+    }
+
+    async fn restore(&mut self, applied: &[AppliedChange]) -> Vec<RestoreFailure> {
+        let hx = self.hx.clone();
+        let to_restore = applied.to_vec();
+        blocking(move || with_usb(&hx, |p| Ok(hx_device::restore_changes(p, &to_restore))))
+            .await
+            .unwrap_or_else(|reason| {
+                applied
+                    .iter()
+                    .rev()
+                    .map(|a| RestoreFailure {
+                        block: a.block_id.clone(),
+                        parameter: a.param_name.clone(),
+                        value: a.previous_display.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect()
+            })
     }
 
     async fn record(&mut self) -> Result<Prepared, String> {
@@ -325,139 +358,29 @@ impl Engine for TauriEngine {
     }
 }
 
-/// 処理を始める前に権限を確かめる。弾き終わってから失敗させないため、録音の前に見る。
-/// 足りなければ、その場で許可を求め (ダイアログかシステム設定を開く)、エラーにする。
-fn ensure_permissions(need_microphone: bool) -> Result<(), String> {
-    let missing = permission::missing(&macos::permission_status(), need_microphone);
-    let Some((first, _)) = missing.first() else {
+/// マイクの権限だけ確かめる (USB 直接方式では画面収録とアクセシビリティは不要)。
+fn ensure_microphone_permission() -> Result<(), String> {
+    if macos::permission_status().microphone == "granted" {
         return Ok(());
-    };
-    let names = missing
-        .iter()
-        .map(|(_, n)| *n)
-        .collect::<Vec<_>>()
-        .join("・");
-    macos::grant_permission(first)
-        .map_err(|e| format!("{names} の権限が必要ですが、許可を求められませんでした: {e}"))?;
-    Err(format!(
-        "{names} の権限が必要です。許可してから、もう一度実行してください"
-    ))
-}
-
-/// 1 サイクルの間、撮り直しても変わらない AI への入力。
-struct CycleInput<'a> {
-    purpose: Purpose<'a>,
-    history: &'a [ChatTurn],
-    changed: &'a [RestoreTarget],
-    reference: Option<&'a [u8]>,
-    recording: Option<&'a [u8]>,
-    /// 立っていたら、AI の提案を実行する前に止める。
-    stop: Option<&'a AtomicBool>,
-}
-
-/// 撮影 → AI → 検証 → 実行を、ブロック選択が続く限り繰り返す。
-/// 途中で止まっても、それまでの結果は `report` に残す。
-async fn run_rounds<E: Engine>(
-    engine: &mut E,
-    model: &str,
-    input: &CycleInput<'_>,
-    report: &mut CycleReport,
-    mut on_done: impl FnMut(&DoneAction),
-) -> Result<(), String> {
-    let purpose = &input.purpose;
-    let mut done_in_cycle: Vec<DoneAction> = Vec::new();
-    for round in 1..=MAX_ROUNDS {
-        report.rounds = round;
-        engine.progress(
-            "capture",
-            format!("HX Edit を撮影中 ({round}/{MAX_ROUNDS})"),
-        );
-        let shot = engine.capture().await?;
-
-        engine.progress("ai", format!("AI ({model}) に問い合わせ中"));
-        let body = ai::build_request(
-            model,
-            &RequestInput {
-                purpose: purpose.clone(),
-                history: input.history,
-                reference_audio: input.reference,
-                recording_wav: input.recording,
-                screenshot_png: &shot.png,
-                screenshot_size: (shot.width, shot.height),
-                round,
-                max_rounds: MAX_ROUNDS,
-                done_in_this_cycle: &done_in_cycle,
-                earlier_explanations: &report.explanations,
-                changed_parameters: input.changed,
-            },
-        );
-        let resp = engine.ask(&body).await?;
-        if !resp.explanation.trim().is_empty() {
-            report
-                .explanations
-                .push(resp.explanation.trim().to_string());
-        }
-        ai::validate(&resp, purpose, round == MAX_ROUNDS)?;
-        report.goal_reached = resp.goal_reached;
-
-        if resp.actions.is_empty() {
-            return Ok(());
-        }
-        if input.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
-            return Err(STOPPED_BEFORE_EXECUTE.to_string());
-        }
-        engine.progress(
-            "operate",
-            format!("HX Edit を操作中 ({} 件)", resp.actions.len()),
-        );
-        let outcome = engine
-            .execute(resp.actions.clone(), shot.window.clone())
-            .await?;
-        for d in &outcome.done {
-            if d.kind == ActionKind::SetValue {
-                report.changes.push(d.clone());
-            }
-            on_done(d);
-        }
-        done_in_cycle.extend(outcome.done);
-        if let Some(e) = outcome.error {
-            report.interrupted = true;
-            return Err(e);
-        }
-
-        let selected_block = resp
-            .actions
-            .last()
-            .is_some_and(|a| a.kind == ActionKind::SelectBlock);
-        if !selected_block {
-            return Ok(());
-        }
     }
-    Ok(())
+    macos::grant_permission("microphone")
+        .map_err(|e| format!("マイク の権限が必要ですが、許可を求められませんでした: {e}"))?;
+    Err("マイク の権限が必要です。許可してから、もう一度実行してください".into())
 }
 
-/// 同じパラメータを 2 回変えたときは、最初の変更前の値に戻す。
-pub fn restore_targets(changes: &[DoneAction]) -> Vec<RestoreTarget> {
-    let mut out: Vec<RestoreTarget> = Vec::new();
-    for c in changes.iter().filter(|c| c.kind == ActionKind::SetValue) {
-        let dup = out
-            .iter()
-            .any(|t| norm(&t.block) == norm(&c.block) && norm(&t.parameter) == norm(&c.parameter));
-        if !dup {
-            out.push(RestoreTarget {
-                block: c.block.clone(),
-                parameter: c.parameter.clone(),
-                value: c.previous_value.clone(),
-            });
-        }
+fn done_from_applied(a: &AppliedChange) -> DoneAction {
+    DoneAction {
+        block: a.block_id.clone(),
+        parameter: a.param_name.clone(),
+        value: a.new_display.clone(),
+        previous_value: a.previous_display.clone(),
     }
-    out
 }
 
 /// 実行した値の変更を「変えたパラメータ」の一覧に反映する。同じパラメータは最後の値だけを
 /// 一覧の末尾に残し、上限を超えたら古いものから消す。
 pub fn record_changes(log: &mut Vec<RestoreTarget>, changes: &[DoneAction]) {
-    for c in changes.iter().filter(|c| c.kind == ActionKind::SetValue) {
+    for c in changes {
         log.retain(|t| {
             !(norm(&t.block) == norm(&c.block) && norm(&t.parameter) == norm(&c.parameter))
         });
@@ -476,25 +399,6 @@ fn norm(s: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
-}
-
-/// Undo で実行した変更を、戻す値の一覧から消し込む。値が一致するものの中で、
-/// パラメータ名も一致するものを優先する。
-pub fn mark_restored(remaining: &mut Vec<RestoreTarget>, done: &DoneAction) {
-    if done.kind != ActionKind::SetValue {
-        return;
-    }
-    let by_name = remaining.iter().position(|t| {
-        t.value.trim() == done.value.trim() && norm(&t.parameter) == norm(&done.parameter)
-    });
-    let by_value = || {
-        remaining
-            .iter()
-            .position(|t| t.value.trim() == done.value.trim())
-    };
-    if let Some(i) = by_name.or_else(by_value) {
-        remaining.remove(i);
-    }
 }
 
 fn summarize(changes: &[DoneAction]) -> String {
@@ -538,25 +442,75 @@ pub async fn adjust<E: Engine>(
     let changed = state.changed.lock().map_err(|e| e.to_string())?.clone();
 
     let mut report = CycleReport::empty(req.recording.map(|r| r.peak_dbfs));
-    let input = CycleInput {
-        purpose: Purpose::Adjust { instruction },
-        history: &history,
-        changed: &changed,
-        reference: reference.as_deref(),
-        recording: req.recording.map(|r| r.wav.as_slice()),
-        stop: req.stop,
-    };
-    let result = run_rounds(engine, model, &input, &mut report, |_| {}).await;
+    let mut applied_for_undo: Vec<AppliedChange> = Vec::new();
+
+    let result: Result<(), String> = async {
+        engine.progress("capture", "HX Stomp から現在の設定を取得中".into());
+        let snap = engine.read_chain().await?;
+        let chain_text = hx_device::render_chain(&snap);
+
+        engine.progress("ai", format!("AI ({model}) に問い合わせ中"));
+        let body = ai::build_request(
+            model,
+            &RequestInput {
+                instruction,
+                history: &history,
+                reference_audio: reference.as_deref(),
+                recording_wav: req.recording.map(|r| r.wav.as_slice()),
+                chain_text: &chain_text,
+                changed_parameters: &changed,
+            },
+        );
+        let resp = engine.ask(&body).await?;
+        if !resp.explanation.trim().is_empty() {
+            report
+                .explanations
+                .push(resp.explanation.trim().to_string());
+        }
+        ai::validate(&resp)?;
+        report.goal_reached = resp.goal_reached;
+
+        if resp.changes.is_empty() {
+            return Ok(());
+        }
+        if req.stop.is_some_and(|s| s.load(Ordering::SeqCst)) {
+            return Err(STOPPED_BEFORE_EXECUTE.to_string());
+        }
+
+        engine.progress(
+            "operate",
+            format!("HX Stomp に反映中 ({} 件)", resp.changes.len()),
+        );
+        let device_changes: Vec<hx_device::Change> = resp
+            .changes
+            .iter()
+            .map(|c| hx_device::Change {
+                block: c.block.clone(),
+                parameter: c.parameter.clone(),
+                value: c.value.clone(),
+            })
+            .collect();
+        let outcome = engine.apply(&snap, &device_changes).await?;
+        for a in &outcome.applied {
+            report.changes.push(done_from_applied(a));
+        }
+        applied_for_undo = outcome.applied;
+        if let Some(e) = outcome.error {
+            return Err(e);
+        }
+        Ok(())
+    }
+    .await;
+
     report.error = result.err();
 
     record_changes(
         &mut *state.changed.lock().map_err(|e| e.to_string())?,
         &report.changes,
     );
-    let targets = restore_targets(&report.changes);
-    if !targets.is_empty() {
+    if !applied_for_undo.is_empty() {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
-        stack.push(targets);
+        stack.push(applied_for_undo);
         if stack.len() > MAX_UNDO_GROUPS {
             stack.remove(0);
         }
@@ -588,13 +542,10 @@ pub async fn adjust<E: Engine>(
     Ok(report)
 }
 
-/// 直前のサイクルの変更を元に戻す。戻しきれなかった値は、もう一度 Undo できるように残す。
-pub async fn revert<E: Engine>(
-    engine: &mut E,
-    state: &AppState,
-    model: &str,
-) -> Result<CycleReport, String> {
-    let targets = state
+/// 直前のサイクルの変更を元に戻す (AI は呼ばず、記録した元の生値を直接書き戻す)。
+/// 戻しきれなかった値は、もう一度 Undo できるように残す。
+pub async fn revert<E: Engine>(engine: &mut E, state: &AppState) -> Result<CycleReport, String> {
+    let applied = state
         .undo_stack
         .lock()
         .map_err(|e| e.to_string())?
@@ -603,39 +554,64 @@ pub async fn revert<E: Engine>(
         .ok_or_else(|| "戻せる変更がありません".to_string())?;
 
     let mut report = CycleReport::empty(None);
-    let mut remaining = targets.clone();
-    let input = CycleInput {
-        purpose: Purpose::Revert { targets: &targets },
-        history: &[],
-        changed: &[],
-        reference: None,
-        recording: None,
-        stop: None,
-    };
-    let result = run_rounds(engine, model, &input, &mut report, |d| {
-        mark_restored(&mut remaining, d)
-    })
-    .await;
-    report.error = result.err();
+    engine.progress(
+        "operate",
+        format!("HX Stomp の変更を元に戻しています ({} 件)", applied.len()),
+    );
+    let failures = engine.restore(&applied).await;
+    let failed_keys: HashSet<(usize, usize)> = failures
+        .iter()
+        .filter_map(|f| {
+            applied
+                .iter()
+                .find(|a| a.block_id == f.block && a.param_name == f.parameter)
+                .map(|a| (a.slot, a.param_index))
+        })
+        .collect();
+
+    let mut remaining = Vec::new();
+    for a in applied {
+        if failed_keys.contains(&(a.slot, a.param_index)) {
+            remaining.push(a);
+        } else {
+            report.changes.push(DoneAction {
+                block: a.block_id,
+                parameter: a.param_name,
+                value: a.previous_display,
+                previous_value: a.new_display,
+            });
+        }
+    }
+
     record_changes(
         &mut *state.changed.lock().map_err(|e| e.to_string())?,
         &report.changes,
     );
 
+    let not_restored: Vec<RestoreTarget> = failures
+        .iter()
+        .map(|f| RestoreTarget {
+            block: f.block.clone(),
+            parameter: f.parameter.clone(),
+            value: f.value.clone(),
+        })
+        .collect();
+
     {
         let mut stack = state.undo_stack.lock().map_err(|e| e.to_string())?;
         stack.pop();
         if !remaining.is_empty() {
-            stack.push(remaining.clone());
+            stack.push(remaining);
         }
     }
-    if !remaining.is_empty() && report.error.is_none() {
+    if !not_restored.is_empty() {
         report.error = Some(format!(
-            "{} 個の値を戻せませんでした。もう一度 Undo するか、手で戻してください",
-            remaining.len()
+            "{} 個の値を戻せませんでした ({})。もう一度 Undo するか、手で戻してください",
+            not_restored.len(),
+            failures[0].reason
         ));
     }
-    report.not_restored = remaining;
+    report.not_restored = not_restored;
     {
         let mut chat = state.chat.lock().map_err(|e| e.to_string())?;
         chat.push(ChatTurn {
@@ -648,7 +624,7 @@ pub async fn revert<E: Engine>(
 }
 
 /// 手動モード: 指示と録音 (あれば) を送る。録音は、値を変えたか最後まで終わったら使い切る。
-/// 何も変えずに失敗したとき (AI の混雑など) は、送り直せるように残す。
+/// 何も変えずに失敗したとき (AI の混雑や USB エラーなど) は、送り直せるように残す。
 pub async fn send<E: Engine>(
     engine: &mut E,
     state: &AppState,
@@ -719,8 +695,7 @@ pub fn check_iterations(max_iterations: usize) -> Result<(), String> {
 /// - 停止の合図 (`state.loop_stop`)
 /// - 回数の上限
 /// - AI が値を変えなかった (目標に届いた / 自動で変えられる値が無い)
-/// - 自動操作がガードレールで止まった (ユーザーがマウスに触ったなど)
-/// - `MAX_CONSECUTIVE_FAILURES` 回続けて失敗した (無音・AI の混雑など)
+/// - `MAX_CONSECUTIVE_FAILURES` 回続けて失敗した (無音・AI の混雑・USB 通信エラーなど)
 pub async fn auto_loop<E: Engine>(
     engine: &mut E,
     state: &AppState,
@@ -786,9 +761,6 @@ pub async fn auto_loop<E: Engine>(
         if let Some(e) = &report.error {
             if stopped() {
                 break STOPPED.to_string();
-            }
-            if report.interrupted {
-                break format!("自動操作が止まったので、ループも止めた: {e}");
             }
             failures += 1;
             if failures >= MAX_CONSECUTIVE_FAILURES {
@@ -858,11 +830,11 @@ pub async fn send_message(
         return Err("録音中です。録音を止めてから送ってください".to_string());
     }
     let settings = state.resolved_settings()?;
-    ensure_permissions(false)?;
     let model = settings.model.clone();
     let mut engine = TauriEngine {
         app: app.clone(),
         settings,
+        hx: state.hx.clone(),
         device_id: None,
         seconds: 0,
     };
@@ -883,17 +855,17 @@ pub async fn run_loop(
     sound::check_duration(seconds)?;
     check_iterations(max_iterations)?;
     let settings = state.resolved_settings()?;
-    ensure_permissions(true)?;
-    // 録音の前に HX Edit があるかを確かめる (弾き終わってから失敗させない)
-    let target_app = settings.target_app.clone();
-    blocking(move || capture::find_target_window(&target_app)).await?;
+    ensure_microphone_permission()?;
     let model = settings.model.clone();
     let mut engine = TauriEngine {
         app: app.clone(),
         settings,
+        hx: state.hx.clone(),
         device_id,
         seconds,
     };
+    // 録音の前に HX Stomp が USB で繋がっているか確かめる
+    engine.read_chain().await?;
     let summary = auto_loop(&mut engine, state, &model, &instruction, max_iterations).await;
     emit_progress(&app, "done", "完了".into());
     summary
@@ -902,15 +874,14 @@ pub async fn run_loop(
 pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, String> {
     let _busy = BusyGuard::acquire(&state.busy)?;
     let settings = state.resolved_settings()?;
-    ensure_permissions(false)?;
-    let model = settings.model.clone();
     let mut engine = TauriEngine {
         app: app.clone(),
         settings,
+        hx: state.hx.clone(),
         device_id: None,
         seconds: 0,
     };
-    let report = revert(&mut engine, state, &model).await;
+    let report = revert(&mut engine, state).await;
     emit_progress(&app, "done", "完了".into());
     report
 }
@@ -919,57 +890,13 @@ pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, 
 mod tests {
     use super::*;
 
-    fn done(kind: ActionKind, block: &str, param: &str, prev: &str, value: &str) -> DoneAction {
+    fn done(block: &str, param: &str, prev: &str, value: &str) -> DoneAction {
         DoneAction {
-            kind,
             block: block.into(),
             parameter: param.into(),
             value: value.into(),
             previous_value: prev.into(),
         }
-    }
-
-    #[test]
-    fn restore_targets_keep_first_previous_value() {
-        let changes = vec![
-            done(ActionKind::SetValue, "Amp", "Bass", "5.0", "6.0"),
-            done(ActionKind::SelectBlock, "Delay", "", "", ""),
-            done(ActionKind::SetValue, "Delay", "Mix", "20", "35"),
-            done(ActionKind::SetValue, "amp", " bass ", "6.0", "7.0"),
-        ];
-        let t = restore_targets(&changes);
-        assert_eq!(t.len(), 2);
-        assert_eq!(t[0].value, "5.0");
-        assert_eq!(t[1].parameter, "Mix");
-        assert_eq!(t[1].value, "20");
-    }
-
-    #[test]
-    fn mark_restored_prefers_name_match() {
-        let mut remaining = vec![
-            RestoreTarget {
-                block: "Amp".into(),
-                parameter: "Bass".into(),
-                value: "5.0".into(),
-            },
-            RestoreTarget {
-                block: "Amp".into(),
-                parameter: "Treble".into(),
-                value: "5.0".into(),
-            },
-        ];
-        mark_restored(
-            &mut remaining,
-            &done(ActionKind::SetValue, "Amp", "Treble", "4", "5.0"),
-        );
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].parameter, "Bass");
-        // 名前が違っても値が一致すれば消し込む
-        mark_restored(
-            &mut remaining,
-            &done(ActionKind::SetValue, "Amp", "Low", "4", "5.0"),
-        );
-        assert!(remaining.is_empty());
     }
 
     #[test]
@@ -982,7 +909,6 @@ mod tests {
     }
 
     fn reference_wav(seconds: usize) -> Vec<u8> {
-        // 先頭の 1 秒だけ無音、その後は音が鳴っている 8kHz の WAV
         let mut samples = vec![0.0f32; 8_000];
         samples.extend((0..8_000 * (seconds - 1)).map(|i| if i % 16 < 8 { 0.5 } else { -0.5 }));
         crate::sound::encode_wav(&samples, 1, 8_000).unwrap()
@@ -1030,15 +956,11 @@ mod tests {
         record_changes(
             &mut log,
             &[
-                done(ActionKind::SetValue, "Amp", "Bass", "5", "6"),
-                done(ActionKind::SetValue, "Amp", "Treble", "7", "6.5"),
-                done(ActionKind::SelectBlock, "Delay", "", "", ""),
+                done("block5", "Bass", "5", "6"),
+                done("block5", "Treble", "7", "6.5"),
             ],
         );
-        record_changes(
-            &mut log,
-            &[done(ActionKind::SetValue, "amp", " bass", "6", "7")],
-        );
+        record_changes(&mut log, &[done("BLOCK5", " bass", "6", "7")]);
         let got: Vec<(&str, &str)> = log
             .iter()
             .map(|t| (t.parameter.as_str(), t.value.as_str()))
@@ -1050,7 +972,7 @@ mod tests {
     fn record_changes_forgets_oldest_beyond_the_limit() {
         let mut log = vec![];
         let changes: Vec<DoneAction> = (0..MAX_CHANGED_PARAMETERS + 2)
-            .map(|i| done(ActionKind::SetValue, "Amp", &format!("P{i}"), "0", "1"))
+            .map(|i| done("block5", &format!("P{i}"), "0", "1"))
             .collect();
         record_changes(&mut log, &changes);
         assert_eq!(log.len(), MAX_CHANGED_PARAMETERS);

@@ -4,7 +4,6 @@ mod ai_http_test;
 #[cfg(test)]
 mod ai_live_test;
 mod audio;
-mod automation;
 mod capture;
 mod catalog;
 mod config;
@@ -13,9 +12,7 @@ mod hx_device;
 mod macos;
 mod permission;
 mod preset;
-mod screen_check;
 mod sound;
-mod value_fields;
 mod workflow;
 #[cfg(test)]
 mod workflow_test;

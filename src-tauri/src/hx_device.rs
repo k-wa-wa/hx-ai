@@ -438,26 +438,41 @@ pub fn plan_changes(
     Ok(planned)
 }
 
+/// `apply_changes` の結果。部分的に適用されたあと失敗した場合も、適用済み分を返す。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApplyOutcome {
+    pub applied: Vec<AppliedChange>,
+    pub error: Option<String>,
+}
+
 /// 検証してから実機へ変更を送り、Undo 用の適用記録を返す。
+/// 検証エラー (1 件も送っていない) は `Err`、送信途中の失敗は `Ok(ApplyOutcome { applied, error: Some(...) })`。
 pub fn apply_changes(
     port: &mut dyn HxPort,
     snap: &ChainSnapshot,
     changes: &[Change],
-) -> Result<Vec<AppliedChange>, String> {
+) -> Result<ApplyOutcome, String> {
     let planned = plan_changes(snap, changes, port.catalog())?;
     let mut applied = Vec::with_capacity(planned.len());
     for w in planned {
         let wire = w.wire_kind.wire(w.new_native);
         if let Err(e) = port.write_param(w.slot, w.param_index, wire) {
-            return Err(if applied.is_empty() {
+            let msg = if applied.is_empty() {
                 e
             } else {
                 format!("{} 件適用したところで失敗しました: {e}", applied.len())
+            };
+            return Ok(ApplyOutcome {
+                applied,
+                error: Some(msg),
             });
         }
         applied.push(AppliedChange::from(w));
     }
-    Ok(applied)
+    Ok(ApplyOutcome {
+        applied,
+        error: None,
+    })
 }
 
 /// 適用済みの変更を逆順で元の生値に戻す。失敗した項目だけ返す。
@@ -909,7 +924,7 @@ mod tests {
             write_calls: 0,
             fail_on_write: None,
         };
-        let applied = apply_changes(
+        let outcome = apply_changes(
             &mut port,
             &snap,
             &[
@@ -926,6 +941,8 @@ mod tests {
             ],
         )
         .unwrap();
+        assert_eq!(outcome.error, None);
+        let applied = outcome.applied;
         assert_eq!(
             port.writes,
             vec![(2, 0, WireValue::F32(0.5)), (2, 1, WireValue::Int(2)),]
@@ -937,6 +954,39 @@ mod tests {
             port.writes,
             vec![(2, 1, WireValue::Int(1)), (2, 0, WireValue::F32(0.22)),]
         );
+    }
+
+    #[test]
+    fn apply_partial_failure_keeps_already_written_changes() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = sample_snapshot(&catalog, false);
+        let mut port = FakePort {
+            catalog,
+            snapshot: snap.clone(),
+            writes: vec![],
+            write_calls: 0,
+            fail_on_write: Some(1),
+        };
+        let outcome = apply_changes(
+            &mut port,
+            &snap,
+            &[
+                Change {
+                    block: "block2".into(),
+                    parameter: "Gain 1".into(),
+                    value: "5.0".into(),
+                },
+                Change {
+                    block: "block2".into(),
+                    parameter: "Clipping 1".into(),
+                    value: "Distortion".into(),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(outcome.applied.len(), 1);
+        assert_eq!(outcome.applied[0].param_name, "Gain 1");
+        assert!(outcome.error.unwrap().contains("1 件適用"));
     }
 
     #[test]
@@ -966,7 +1016,8 @@ mod tests {
                 },
             ],
         )
-        .unwrap();
+        .unwrap()
+        .applied;
         port.writes.clear();
         port.write_calls = 0;
         port.fail_on_write = Some(0);
@@ -1034,7 +1085,8 @@ mod tests {
                 value: next_val.clone(),
             }],
         )
-        .unwrap();
+        .unwrap()
+        .applied;
         let after = port.read_snapshot().unwrap();
         let changed = after
             .blocks

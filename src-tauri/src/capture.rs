@@ -1,5 +1,7 @@
 //! HX Edit のウィンドウを探し、そのウィンドウだけをキャプチャする。
 
+#![allow(dead_code)]
+
 use std::io::Cursor;
 
 use serde::Serialize;

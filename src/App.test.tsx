@@ -84,7 +84,6 @@ describe("手動モード", () => {
         report({
           changes: [
             {
-              kind: "set_value",
               block: "Amp",
               parameter: "Treble",
               previous_value: "7.2",
@@ -223,7 +222,7 @@ describe("手動モード", () => {
       send_message: () =>
         report({
           changes: [
-            { kind: "set_value", block: "Amp", parameter: "Bass", previous_value: "5", value: "6" },
+            { block: "Amp", parameter: "Bass", previous_value: "5", value: "6" },
           ],
           error: "マウスが動かされた",
           undo_depth: 1,
@@ -252,7 +251,7 @@ describe("手動モード", () => {
       send_message: () =>
         report({
           changes: [
-            { kind: "set_value", block: "Amp", parameter: "Bass", previous_value: "5", value: "6" },
+            { block: "Amp", parameter: "Bass", previous_value: "5", value: "6" },
           ],
           error: "マウスが動かされた",
           undo_depth: 1,

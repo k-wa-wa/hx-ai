@@ -58,7 +58,6 @@ export interface ReferenceInfo {
 }
 
 export interface DoneAction {
-  kind: "set_value" | "select_block";
   block: string;
   parameter: string;
   value: string;

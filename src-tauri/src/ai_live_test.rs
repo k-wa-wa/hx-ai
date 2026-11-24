@@ -1,40 +1,32 @@
 //! 実際の AI API を呼ぶ結合テスト。課金が発生するので既定では走らない。
 //!
 //! cargo test ai_live -- --ignored --nocapture
-//!
-//! 入力の画面は scripts/make_mock_screenshot.swift で描いた HX Edit 風の模擬画面
-//! (1000×604 ポイント、実物の HX Edit 3.x に合わせた配置) である。パラメータ i 行目の
-//! 数値の中心は x = 956, y = 194 + 25.7 * i ポイント (Treble は 3 行目)。
 
-use crate::ai::{self, ActionKind, AiResponse, Purpose, RequestInput, RestoreTarget};
+use crate::ai::{self, AiResponse, RequestInput};
 use crate::config::{self, StoredSettings};
-use crate::geometry::{MAX_SCREENSHOT_SIDE, fit_within};
 use crate::sound;
 
-const SCREENSHOT: &[u8] = include_bytes!("../tests/fixtures/mock_hx_edit.png");
+const SAMPLE_CHAIN: &str = r#"プリセット: 37B New Preset (Tempo: 70.4 BPM)
 
-/// アプリと同じく、長辺を `MAX_SCREENSHOT_SIDE` に縮めたスクリーンショット。
-fn screenshot() -> (Vec<u8>, (u32, u32)) {
-    let image = image::load_from_memory(SCREENSHOT).unwrap();
-    let (w, h) = fit_within(image.width(), image.height(), MAX_SCREENSHOT_SIDE);
-    let resized = image.resize_exact(w, h, image::imageops::FilterType::Triangle);
-    let mut png = Vec::new();
-    resized
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .unwrap();
-    (png, (w, h))
-}
+[block2] Tone Sovereign [ON]
+  - Gain 1: 2.2 (0.0〜10.0)
+  - Tone 1: 6.6 (0.0〜10.0)
+  - Clipping 1: Boost [Overdrive / Boost / Distortion]
+  - Level 1: 5.0 (0.0〜10.0)
 
-/// 模擬画面の要素の中心 (正規化座標)。
-const TREBLE_VALUE: (f64, f64) = (
-    956.0 / 1000.0 * 1000.0,
-    (194.0 + 25.7 * 3.0) / 604.0 * 1000.0,
-);
-const DELAY_BLOCK: (f64, f64) = (800.0 / 1000.0 * 1000.0, 70.0 / 604.0 * 1000.0);
+[block5] Brit J45 Brt [ON]
+  - Drive: 4.6 (0.0〜10.0)
+  - Bass: 5.0 (0.0〜10.0)
+  - Mid: 5.0 (0.0〜10.0)
+  - Treble: 7.2 (0.0〜10.0)
+  - Presence: 5.0 (0.0〜10.0)
+  - Master: 10.0 (0.0〜10.0)
 
-/// 正解からこの距離 (正規化座標) 以内なら当たりとみなす。縦は隣の行 (25.7 ポイント = 約 43) に
-/// 届かない大きさにする。
-const TOLERANCE: f64 = 30.0;
+[block7] Simple Delay [ON]
+  - Time: 500 ms (0 ms〜8000 ms)
+  - Feedback: 30 % (0 %〜100 %)
+  - Mix: 20 % (0 %〜100 %)
+"#;
 
 /// 高域の強いのこぎり波 (耳に痛い音の代わり)。アプリと同じく 16kHz モノラルにして送る。
 fn bright_tone_wav() -> Vec<u8> {
@@ -56,25 +48,19 @@ fn bright_tone_wav() -> Vec<u8> {
     .wav
 }
 
-async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
+async fn ask(instruction: &str, recording: Option<&[u8]>) -> AiResponse {
     let _ = dotenvy::dotenv();
     let settings = StoredSettings::default()
         .resolve(&config::process_env)
         .expect("OPENAI_API_KEY が必要");
-    let (png, size) = screenshot();
     let body = ai::build_request(
         &settings.model,
         &RequestInput {
-            purpose,
+            instruction,
             history: &[],
             reference_audio: None,
             recording_wav: recording,
-            screenshot_png: &png,
-            screenshot_size: size,
-            round: 1,
-            max_rounds: 4,
-            done_in_this_cycle: &[],
-            earlier_explanations: &[],
+            chain_text: SAMPLE_CHAIN,
             changed_parameters: &[],
         },
     );
@@ -91,128 +77,50 @@ async fn ask(purpose: Purpose<'_>, recording: Option<&[u8]>) -> AiResponse {
     resp
 }
 
-fn near(a: (f64, f64), b: (f64, f64)) -> bool {
-    (a.0 - b.0).abs() <= TOLERANCE && (a.1 - b.1).abs() <= TOLERANCE
-}
-
 #[tokio::test]
 #[ignore]
-async fn ai_live_adjust_reads_treble_field() {
+async fn ai_live_adjust_lowers_treble() {
     let wav = bright_tone_wav();
-    let purpose = Purpose::Adjust {
-        instruction: "高音が耳に痛い。アンプの Treble だけを少し下げて",
-    };
-    let resp = ask(purpose.clone(), Some(&wav)).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
+    let resp = ask(
+        "高音が耳に痛い。アンプの Treble だけを少し下げて",
+        Some(&wav),
+    )
+    .await;
+    ai::validate(&resp).expect("検証");
     let treble = resp
-        .actions
+        .changes
         .iter()
-        .find(|a| a.kind == ActionKind::SetValue && a.parameter.to_lowercase().contains("treble"))
-        .expect("Treble の変更が無い");
-    assert_eq!(treble.previous_value.trim(), "7.2", "変更前の値の読み取り");
-    assert!(
-        treble.value.trim().parse::<f64>().unwrap() < 7.2,
-        "Treble が下がっていない"
-    );
-    assert!(
-        near((treble.x, treble.y), TREBLE_VALUE),
-        "Treble の座標 ({}, {}) が正解 {:?} から外れている",
-        treble.x,
-        treble.y,
-        TREBLE_VALUE
-    );
-    assert_eq!(treble.field, 4, "Treble は矢印のある行の 4 番目");
-    assert_clicks_treble(treble);
-}
-
-/// アプリが AI の点と番号から押す位置を決めると、Treble の数値の文字になること。
-fn assert_clicks_treble(a: &ai::AiAction) {
-    use crate::capture::TargetWindow;
-    use crate::geometry::Rect;
-    let rect = Rect {
-        x: 0.0,
-        y: 0.0,
-        width: 1000.0,
-        height: 604.0,
-    };
-    let window = TargetWindow {
-        window_id: 1,
-        pid: 1,
-        app_name: "HX Edit".into(),
-        title: "HX Edit".into(),
-        rect,
-    };
-    let img = image::load_from_memory(SCREENSHOT).unwrap().to_rgba8();
-    let p = crate::geometry::normalized_to_screen(rect, a.x, a.y).unwrap();
-    let target = crate::automation::locate_field(&img, &window, p, a.field).expect("押す位置");
-    assert!((target.x - 956.0).abs() <= 3.0, "{target:?}");
-    assert!((target.y - (194.0 + 25.7 * 3.0)).abs() <= 3.0, "{target:?}");
+        .find(|c| c.block == "block5" && c.parameter.to_lowercase().contains("treble"))
+        .expect("block5 の Treble の変更が無い");
+    let next: f64 = treble.value.trim().parse().expect("数値でない");
+    assert!(next < 7.2, "Treble が下がっていない: {next}");
 }
 
 #[tokio::test]
 #[ignore]
-async fn ai_live_revert_types_previous_value() {
-    let targets = vec![RestoreTarget {
-        block: "Amp".into(),
-        parameter: "Treble".into(),
-        value: "6.0".into(),
-    }];
-    let purpose = Purpose::Revert { targets: &targets };
-    let resp = ask(purpose.clone(), None).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
-    let set: Vec<_> = resp
-        .actions
-        .iter()
-        .filter(|a| a.kind == ActionKind::SetValue)
-        .collect();
-    assert_eq!(set.len(), 1, "戻す値は 1 つだけ");
-    assert_eq!(set[0].value.trim(), "6.0");
-    assert_eq!(set[0].field, 4);
-    assert_clicks_treble(set[0]);
-    assert!(
-        near((set[0].x, set[0].y), TREBLE_VALUE),
-        "座標 ({}, {}) が正解 {:?} から外れている",
-        set[0].x,
-        set[0].y,
-        TREBLE_VALUE
-    );
-}
-
-#[tokio::test]
-#[ignore]
-async fn ai_live_selects_hidden_block() {
+async fn ai_live_adjusts_delay_mix_directly() {
     let wav = bright_tone_wav();
-    let purpose = Purpose::Adjust {
-        instruction: "ディレイの Mix を少し上げて。アンプは触らないで",
-    };
-    let resp = ask(purpose.clone(), Some(&wav)).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
-    let last = resp.actions.last().expect("操作が無い");
-    assert_eq!(
-        last.kind,
-        ActionKind::SelectBlock,
-        "最後にブロック選択が来るはず"
-    );
-    assert!(resp.needs_another_round);
-    assert!(
-        near((last.x, last.y), DELAY_BLOCK),
-        "Delay ブロックの座標 ({}, {}) が正解 {:?} から外れている",
-        last.x,
-        last.y,
-        DELAY_BLOCK
-    );
+    let resp = ask("ディレイの Mix だけを 35 % にして", Some(&wav)).await;
+    ai::validate(&resp).expect("検証");
+    let mix = resp
+        .changes
+        .iter()
+        .find(|c| c.block == "block7" && c.parameter.eq_ignore_ascii_case("Mix"))
+        .expect("block7 の Mix の変更が無い");
+    let val = mix.value.trim().trim_end_matches('%').trim();
+    assert_eq!(val.parse::<f64>().unwrap(), 35.0);
 }
 
 #[tokio::test]
 #[ignore]
 async fn ai_live_recommends_a_model_from_the_catalog() {
     let wav = bright_tone_wav();
-    let purpose = Purpose::Adjust {
-        instruction: "歪みを Bluesbreaker 系 (BB 系) のオーバードライブに変えたい。どのモデルがよいか教えて。値は変えなくてよい",
-    };
-    let resp = ask(purpose.clone(), Some(&wav)).await;
-    ai::validate(&resp, &purpose, false).expect("検証");
-    // 一覧で Bluesbreaker 系に分類した HX Stomp のモデル
+    let resp = ask(
+        "歪みを Bluesbreaker 系 (BB 系) のオーバードライブに変えたい。どのモデルがよいか教えて。値は変えなくてよい",
+        Some(&wav),
+    )
+    .await;
+    ai::validate(&resp).expect("検証");
     assert!(
         ["Heir Apparent", "Tone Sovereign"]
             .iter()

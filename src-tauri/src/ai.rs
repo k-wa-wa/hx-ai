@@ -1,7 +1,7 @@
-//! OpenAI 互換の Chat Completions API で AI に音とスクショを渡し、操作を JSON で受け取る。
+//! OpenAI 互換の Chat Completions API で AI に音と現在のチェーン情報を渡し、変更を JSON で受け取る。
 //!
 //! 既定の接続先は Gemini の OpenAI 互換エンドポイントである。音声は `input_audio`、
-//! 画像は `image_url` (data URL)、出力は `response_format` の JSON スキーマで指定する。
+//! 現在のチェーン状態はテキスト、出力はツール呼び出し (`submit_changes`) で受け取る。
 
 use std::time::Duration;
 
@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use crate::catalog;
 use crate::config::ResolvedSettings;
 
-/// 1 回の応答で受け付ける値の変更の上限。これを超える応答は丸ごと捨てる。
-pub const MAX_SET_VALUE_ACTIONS: usize = 12;
+/// 1 回の応答で受け付ける変更の上限。これを超える応答は丸ごと捨てる。
+pub const MAX_CHANGES: usize = 12;
 
 /// 会話の文脈として送る過去のやりとりの数。
 pub const MAX_HISTORY_TURNS: usize = 8;
@@ -27,45 +27,21 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 pub const MAX_SEARCHES: usize = 3;
 /// エフェクト一覧を検索する関数の名前。
 pub const SEARCH_TOOL: &str = "search_effects";
-/// 答え (操作) を返す関数の名前。
-pub const SUBMIT_TOOL: &str = "submit_actions";
+/// 答え (変更の一覧) を返す関数の名前。
+pub const SUBMIT_TOOL: &str = "submit_changes";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ActionKind {
-    /// パラメータの数値欄をダブルクリックし、値を打ち込んで Enter で確定する。
-    SetValue,
-    /// シグナルチェーン上のブロックをクリックして選ぶ。選んだ後は撮り直して聞き直す。
-    SelectBlock,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AiAction {
-    #[serde(rename = "type")]
-    pub kind: ActionKind,
-    #[serde(default)]
+/// AI が提案する 1 件のパラメータ変更。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AiChange {
     pub block: String,
-    #[serde(default)]
     pub parameter: String,
-    /// 正規化座標 (0〜1000)。
-    pub x: f64,
-    pub y: f64,
-    #[serde(default)]
     pub value: String,
-    #[serde(default)]
-    pub previous_value: String,
-    /// set_value で変える行の番号 (右端に上下の矢印がある行だけを上から数えて 1 始まり)。
-    /// アプリは x, y にいちばん近い矢印の行を画素で探し、その番号と一致するときだけ操作する。
-    #[serde(default)]
-    pub field: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AiResponse {
     pub explanation: String,
-    pub actions: Vec<AiAction>,
-    #[serde(default)]
-    pub needs_another_round: bool,
+    pub changes: Vec<AiChange>,
     /// 目標に届いたので、これ以上変えなくてよいか (自動ループはこれで止まる)。
     #[serde(default)]
     pub goal_reached: bool,
@@ -115,7 +91,7 @@ pub struct ChatTurn {
     pub text: String,
 }
 
-/// Undo で元に戻す値 1 つ分。
+/// Undo で元に戻せなかった項目の表示や、変更済み一覧に使う情報。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RestoreTarget {
     pub block: String,
@@ -123,19 +99,9 @@ pub struct RestoreTarget {
     pub value: String,
 }
 
-/// 今回のリクエストの目的。
-#[derive(Debug, Clone)]
-pub enum Purpose<'a> {
-    /// ユーザーの指示に沿って音を調整する。
-    Adjust { instruction: &'a str },
-    /// 直前の変更を元に戻す。
-    Revert { targets: &'a [RestoreTarget] },
-}
-
-/// 同じサイクル内で既に実行した操作 (ブロック選択後の撮り直しで AI に伝える)。
+/// 実際に機器へ適用した変更 1 件 (画面表示用)。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DoneAction {
-    pub kind: ActionKind,
     pub block: String,
     pub parameter: String,
     pub value: String,
@@ -143,70 +109,49 @@ pub struct DoneAction {
 }
 
 pub struct RequestInput<'a> {
-    pub purpose: Purpose<'a>,
+    pub instruction: &'a str,
     pub history: &'a [ChatTurn],
     /// リファレンスから切り出した区間 (WAV)。
     pub reference_audio: Option<&'a [u8]>,
     pub recording_wav: Option<&'a [u8]>,
-    pub screenshot_png: &'a [u8],
-    pub screenshot_size: (u32, u32),
-    /// 何回目の撮影か (1 始まり)。
-    pub round: usize,
-    pub max_rounds: usize,
-    pub done_in_this_cycle: &'a [DoneAction],
-    /// 同じサイクルの前の撮影であなたが書いた説明 (2 回目以降は音声を送らないので、方針を伝える)。
-    pub earlier_explanations: &'a [String],
-    /// このセッションでアプリが打ち込んだ値 (パラメータごとに最後の値)。
+    /// USB 経由で読み取った現在のチェーン状態のテキスト。
+    pub chain_text: &'a str,
+    /// このセッションでアプリが変えた値 (パラメータごとに最後の値)。
     pub changed_parameters: &'a [RestoreTarget],
 }
 
-pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp を HX Edit (macOS) で操作するギター音作りのアシスタントである。
+pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp / HX Stomp XL を USB 接続で操作するギター音作りのアシスタントである。
 渡されるもの:
-- HX Edit のウィンドウ全体のスクリーンショット (タイトルバーを含む)
+- 現在のプリセットのシグナルチェーンと各ブロックのパラメータ一覧 (現在値・範囲・選択肢)
 - HX Stomp から録音した現在のギターの音 (渡された場合)
 - 目標にしたいリファレンス音源 (渡された場合)
 - ユーザーの指示
 
 やること:
-1. 音を聴き比べ、スクリーンショットからシグナルチェーンのブロック構成と、いま選ばれているブロックのパラメータの値を読み取る。
+1. 音を聴き比べ、渡されたブロックとパラメータ一覧から現在の設定を読む。
 2. 指示 (とリファレンス) に近づけるためのパラメータ変更を決める。
-3. 変更をアプリが自動で実行できる操作として返す。
+3. 変更をアプリが自動で実行できる一覧として返す。
 
-画面の見方:
-- 上部の枠の中がシグナルチェーンで、ブロックのアイコンと名前 (Dist, Amp など) が横に並ぶ。白い枠で囲まれたものが選ばれている。
-- その下の EDIT タブの左側は、カテゴリとモデル名の一覧である。押すとモデルが変わってしまうので、決して指さない。
-- 右側の一番上の行に、選ばれたブロックのモデル名があり、その行の右端に星 (お気に入り) と電源 (On/Off) のアイコンがある。これも指さない。
-- その下に、パラメータが行ごとに縦に並ぶ。数値の行は、左上のパラメータ名、その下の横長のバー、行の右端の数値の文字 (例: "4.2", "600 ms") と上下の矢印でできている。
-- 右端に上下の矢印が無い行もある: 段階のボタン (例: 6 / 8 / 10 / 24、Overdrive / Boost / Distortion) や Off / On の切り替え。これらは数値を打ち込めない。
+チェーン一覧の見方:
+- 各ブロックは `[block2] Tone Sovereign [ON]` のように `[blockN]` の識別子と名前・On/Off 状態で書かれる。
+- その下に `- Gain 1: 2.2 (0.0〜10.0)` のように、パラメータ名・現在値・許容範囲や `[Overdrive / Boost / Distortion]` のような選択肢が並ぶ。
+- `[固定: 変更不可]` (スナップショットやコントローラー割り当て済み) や `(変更不可)` と書かれた項目は変更してはいけない。
+- `(参照のみ)` と書かれた項目も自動では変えられない。
 
-操作の種類:
-- "set_value": いま右側に出ている数値の行の値を変える。field には、右端に上下の矢印がある行だけを上から数えた番号 (1 始まり) を書く。矢印の無い行 (段階のボタン・Off / On) は数えない。x, y はその行の右端の数値の文字の中心を指す。アプリは画面の画素から矢印の行を見つけ、x, y にいちばん近い行の番号が field と同じときだけ、その行の数値をダブルクリックして入力欄にし、value を打ち込んで Enter で確定する。
-- "select_block": シグナルチェーン上のブロックをクリックして選ぶ。x, y はそのブロックのアイコンの中心を指す。value / previous_value は空文字、field は 0 にする。
-- 矢印の無い行は操作に入れず、explanation で手動の操作として勧める。
-
-座標の決まり:
-- x, y はスクリーンショットの左上を (0, 0)、右下を (1000, 1000) とする正規化座標で返す。x が横、y が縦である。
-- タイトルバー (最上部) やウィンドウの外を指してはいけない。
-- 座標に自信が無いパラメータは操作に入れず、explanation で手動での変更を勧める。
-
-値の決まり:
-- value と previous_value は単位を付けない数値の文字列で書く (例: "6.5", "-3.0", "40")。
-- previous_value にはスクリーンショットから読み取った変更前の値をそのまま書く。Undo に使うので正確に読むこと。
-- On/Off の切り替えや、モデルの種類・音符の長さなど数値でない設定は操作に入れず、explanation で手動の操作として説明する。
-- 値はパラメータの範囲内にする。1 回の変更は控えめにし、変更は最大 12 個までにする。
-
-ブロックの選び直し:
-- 変えたいパラメータが画面に出ていないブロックにあるときは、いま見えているパラメータの set_value を先に並べ、最後に select_block を 1 つだけ置き、needs_another_round を true にする。アプリはそのブロックを選んでから撮り直し、もう一度あなたに聞く。
-- それ以外のときは needs_another_round を false にする。
-- 選び直した後は撮り直したスクリーンショットだけを渡し、音声は渡さない。select_block を返すときは、選んだ後に変える予定のパラメータと変える向きを explanation に書いておくこと。
+変更の決まり:
+- changes の各要素には `block` (例: "block2")、`parameter` (一覧にあるパラメータ名そのまま)、`value` (新しい値) を入れる。
+- 数値の `value` は一覧の範囲内で書く (単位は省いても、表示されている単位を付けてもよい。例: "6.5", "-3.0")。
+- 選択肢の `value` は `[...]` の中に列挙された文字列から正確に選ぶ。
+- 1 回の変更は控えめにし、変更は最大 12 個までにする。同じブロック・パラメータを 1 回の中に重複させない。
+- ブロックの On/Off 切り替えやモデルの切り替えはアプリでは実行しない。必要なら explanation で手動操作を勧め、search_effects で調べた正確なモデル名を書くこと。
+- 変更は一時編集バッファにだけ反映される (保存は人間が本体で行う)。
 
 関数 (ツール):
-- search_effects: HX Stomp のエフェクト一覧を category と query で検索する。別のモデルを勧めるとき、画面のモデルが何を元にしたものか確かめるときに使う。1 回の問い合わせで 3 回まで。
-- submit_actions: 答えを返す。最後に必ず 1 回呼ぶ。
-- モデルの切り替え (別のアンプやペダルに変えること) はアプリでは実行しない。勧めるときは search_effects で確かめた正確なモデル名を explanation に書き、手で切り替えるよう伝える。
+- search_effects: HX Stomp のエフェクト一覧を category と query で検索する。別のモデルを勧めるときや、現在のモデルが何を元にしたものか確かめるときに使う。1 回の問い合わせで 3 回まで。
+- submit_changes: 答え (説明と変更一覧) を返す。最後に必ず 1 回呼ぶ。
 
 目標への到達:
-- 録音がユーザーの指示 (とリファレンス) に十分近く、これ以上変える必要が無いと判断したら goal_reached を true にし、actions を空にする。
+- 録音がユーザーの指示 (とリファレンス) に十分近く、これ以上変える必要が無いと判断したら goal_reached を true にし、changes を空にする。
 - まだ変える余地があるなら goal_reached を false にする。自動ループでは、録音 → あなたへの問い合わせ → 変更 を、goal_reached が true になるまで繰り返す。前回の変更で行き過ぎたと聴こえたら戻してよい。
 
 explanation は日本語で、何をなぜ変えるのか、録音とリファレンスの違いをどう聴いたのかを簡潔に書く。"#;
@@ -217,27 +162,21 @@ pub fn response_schema() -> Value {
         "type": "object",
         "properties": {
             "explanation": { "type": "string" },
-            "actions": {
+            "changes": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "type": { "type": "string", "enum": ["set_value", "select_block"] },
                         "block": { "type": "string" },
                         "parameter": { "type": "string" },
-                        "x": { "type": "number" },
-                        "y": { "type": "number" },
-                        "value": { "type": "string" },
-                        "previous_value": { "type": "string" },
-                        "field": { "type": "integer" }
+                        "value": { "type": "string" }
                     },
-                    "required": ["type", "block", "parameter", "x", "y", "value", "previous_value", "field"]
+                    "required": ["block", "parameter", "value"]
                 }
             },
-            "needs_another_round": { "type": "boolean" },
             "goal_reached": { "type": "boolean" }
         },
-        "required": ["explanation", "actions", "needs_another_round", "goal_reached"]
+        "required": ["explanation", "changes", "goal_reached"]
     })
 }
 
@@ -245,95 +184,45 @@ fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
-fn describe_done(done: &[DoneAction]) -> String {
-    done.iter()
-        .map(|d| match d.kind {
-            ActionKind::SetValue => format!(
-                "- {} / {}: {} → {}",
-                d.block, d.parameter, d.previous_value, d.value
-            ),
-            ActionKind::SelectBlock => format!("- ブロック「{}」を選んだ", d.block),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+fn prompt_text(input: &RequestInput) -> String {
+    let mut t = String::new();
+    t.push_str("ユーザーの指示: ");
+    if input.instruction.trim().is_empty() {
+        t.push_str("(指示なし。リファレンスに近づけるか、録音を聴いて改善点を提案すること)");
+    } else {
+        t.push_str(input.instruction.trim());
+    }
+    t.push('\n');
 
-fn purpose_text(input: &RequestInput) -> String {
-    let (w, h) = input.screenshot_size;
-    let mut text = match &input.purpose {
-        Purpose::Adjust { instruction } => {
-            let mut t = String::new();
-            t.push_str("ユーザーの指示: ");
-            if instruction.trim().is_empty() {
-                t.push_str(
-                    "(指示なし。リファレンスに近づけるか、録音を聴いて改善点を提案すること)",
-                );
-            } else {
-                t.push_str(instruction.trim());
-            }
-            t.push('\n');
-            if input.round > 1 {
-                t.push_str(
-                    "音声は 1 回目の問い合わせで渡した (データ量を抑えるため今回は渡さない)。\
-                     前の撮影でのあなたの説明:\n",
-                );
-                for e in input.earlier_explanations {
-                    t.push_str(&format!("- {}\n", truncate(e.trim(), MAX_HISTORY_CHARS)));
-                }
-            } else {
-                match (
-                    input.reference_audio.is_some(),
-                    input.recording_wav.is_some(),
-                ) {
-                    (true, true) => t.push_str(
-                        "1 つ目の音声がリファレンス (目標の音)、2 つ目の音声が現在の録音である。\n",
-                    ),
-                    (false, true) => {
-                        t.push_str("音声は現在の録音である。リファレンスは無い。\n")
-                    }
-                    (true, false) => t.push_str(
-                        "音声はリファレンスのみである。現在の音は録音されていないので、画面と指示から判断する。\n",
-                    ),
-                    (false, false) => t.push_str(
-                        "音声は無い。画面と指示から判断する。\n",
-                    ),
-                }
-            }
-            if !input.changed_parameters.is_empty() {
-                t.push_str(
-                    "このセッションでアプリが打ち込んだ値 (その後ユーザーが手で変えたかもしれないので、画面の値を優先する):\n",
-                );
-                for c in input.changed_parameters {
-                    t.push_str(&format!("- {} / {}: {}\n", c.block, c.parameter, c.value));
-                }
-            }
-            t
+    match (
+        input.reference_audio.is_some(),
+        input.recording_wav.is_some(),
+    ) {
+        (true, true) => {
+            t.push_str("1 つ目の音声がリファレンス (目標の音)、2 つ目の音声が現在の録音である。\n")
         }
-        Purpose::Revert { targets } => {
-            let list = targets
-                .iter()
-                .map(|t| format!("- {} / {} を {} に戻す", t.block, t.parameter, t.value))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!(
-                "直前の変更を元に戻したい。次のパラメータを指定の値にする set_value を返すこと。\
-                 value には下の値をそのまま書き、新しい調整は加えないこと。\n{list}\n"
-            )
+        (false, true) => t.push_str("音声は現在の録音である。リファレンスは無い。\n"),
+        (true, false) => t.push_str(
+            "音声はリファレンスのみである。現在の音は録音されていないので、チェーンと指示から判断する。\n",
+        ),
+        (false, false) => t.push_str("音声は無い。現在のチェーンと指示から判断する。\n"),
+    }
+
+    if !input.changed_parameters.is_empty() {
+        t.push_str(
+            "このセッションでアプリが変えた値 (その後ユーザーが本体で変えたかもしれないので、下の現在値を優先する):\n",
+        );
+        for c in input.changed_parameters {
+            t.push_str(&format!("- {} / {}: {}\n", c.block, c.parameter, c.value));
         }
-    };
-    text.push_str(&format!(
-        "スクリーンショットは {w}×{h} ピクセル。撮影は {} 回目 (最大 {} 回)。\n",
-        input.round, input.max_rounds
-    ));
-    if input.round >= input.max_rounds {
-        text.push_str("これが最後の撮影なので select_block は返さず、needs_another_round は false にすること。\n");
     }
-    if !input.done_in_this_cycle.is_empty() {
-        text.push_str("今回のサイクルで既に実行した操作 (スクリーンショットは実行後のもの):\n");
-        text.push_str(&describe_done(input.done_in_this_cycle));
-        text.push('\n');
+
+    t.push_str("\n現在のシグナルチェーンとパラメータ:\n");
+    t.push_str(input.chain_text);
+    if !input.chain_text.ends_with('\n') {
+        t.push('\n');
     }
-    text
+    t
 }
 
 /// Chat Completions のリクエスト本文を組み立てる。
@@ -348,25 +237,19 @@ pub fn build_request(model: &str, input: &RequestInput) -> Value {
         }));
     }
 
-    let mut content = vec![json!({ "type": "text", "text": purpose_text(input) })];
-    // 音声は 1 回目の撮影でだけ送る (ブロックを選び直した後は画面だけを見ればよい)
-    let audio = input.round == 1;
-    if let Some(wav) = input.reference_audio.filter(|_| audio) {
+    let mut content = vec![json!({ "type": "text", "text": prompt_text(input) })];
+    if let Some(wav) = input.reference_audio {
         content.push(json!({
             "type": "input_audio",
             "input_audio": { "data": b64(wav), "format": "wav" }
         }));
     }
-    if let Some(wav) = input.recording_wav.filter(|_| audio) {
+    if let Some(wav) = input.recording_wav {
         content.push(json!({
             "type": "input_audio",
             "input_audio": { "data": b64(wav), "format": "wav" }
         }));
     }
-    content.push(json!({
-        "type": "image_url",
-        "image_url": { "url": format!("data:image/png;base64,{}", b64(input.screenshot_png)) }
-    }));
     messages.push(json!({ "role": "user", "content": content }));
 
     json!({
@@ -378,14 +261,14 @@ pub fn build_request(model: &str, input: &RequestInput) -> Value {
     })
 }
 
-/// AI に渡す関数: エフェクト一覧の検索と、答えの提出。
+/// AI に渡す関数: エフェクト一覧の検索と、変更の提出。
 pub fn tools() -> Value {
     json!([
         {
             "type": "function",
             "function": {
                 "name": SEARCH_TOOL,
-                "description": "HX Stomp のエフェクト一覧を検索する。モデルを勧めるときや、画面のモデルが何を元にしたものか確かめるときに使う。category と query の少なくとも一方を指定する。結果は最大 15 件で、total が全件数である。",
+                "description": "HX Stomp のエフェクト一覧を検索する。モデルを勧めるときや、現在のモデルが何を元にしたものか確かめるときに使う。category と query の少なくとも一方を指定する。結果は最大 15 件で、total が全件数である。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -402,7 +285,7 @@ pub fn tools() -> Value {
             "type": "function",
             "function": {
                 "name": SUBMIT_TOOL,
-                "description": "答え (説明と、アプリが実行する操作) を返す。最後に必ず 1 回呼ぶ。",
+                "description": "答え (説明と、変更するパラメータの一覧) を返す。最後に必ず 1 回呼ぶ。",
                 "parameters": response_schema()
             }
         }
@@ -547,69 +430,23 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// 数値として打ち込んでよい文字列かを確かめる (単位や記号は受け付けない)。
-pub fn is_numeric_value(s: &str) -> bool {
-    let t = s.trim();
-    !t.is_empty()
-        && t.len() <= 12
-        && t.chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+')
-        && t.parse::<f64>().is_ok_and(f64::is_finite)
-}
-
-/// AI の応答を実行してよいか、実行前にまとめて確かめる。1 つでも不正なら何も実行しない。
-pub fn validate(resp: &AiResponse, purpose: &Purpose, last_round: bool) -> Result<(), String> {
-    let set_values: Vec<_> = resp
-        .actions
-        .iter()
-        .filter(|a| a.kind == ActionKind::SetValue)
-        .collect();
-    if set_values.len() > MAX_SET_VALUE_ACTIONS {
+/// AI の応答の基本形を確かめる (件数上限・空欄)。パラメータ実在と範囲は `hx_device::plan_changes` で検証する。
+pub fn validate(resp: &AiResponse) -> Result<(), String> {
+    if resp.changes.len() > MAX_CHANGES {
         return Err(format!(
-            "AI が {} 個の変更を返しました (上限 {MAX_SET_VALUE_ACTIONS} 個)。実行しません",
-            set_values.len()
+            "AI が {} 個の変更を返しました (上限 {MAX_CHANGES} 個)。実行しません",
+            resp.changes.len()
         ));
     }
-    for (i, a) in resp.actions.iter().enumerate() {
-        let label = format!("操作 {} ({} / {})", i + 1, a.block, a.parameter);
-        if !(0.0..=1000.0).contains(&a.x) || !(0.0..=1000.0).contains(&a.y) {
+    for (i, c) in resp.changes.iter().enumerate() {
+        if c.block.trim().is_empty() || c.parameter.trim().is_empty() || c.value.trim().is_empty() {
             return Err(format!(
-                "{label} の座標が 0〜1000 の範囲外です: ({}, {})",
-                a.x, a.y
+                "変更 {} に空の項目があります (block={:?}, parameter={:?}, value={:?})",
+                i + 1,
+                c.block,
+                c.parameter,
+                c.value
             ));
-        }
-        match a.kind {
-            ActionKind::SetValue => {
-                if !is_numeric_value(&a.value) {
-                    return Err(format!("{label} の値が数値ではありません: {:?}", a.value));
-                }
-                if a.field == 0 {
-                    return Err(format!(
-                        "{label} の行の番号 (field) がありません。数値を打ち込める行か分からないので実行しません"
-                    ));
-                }
-            }
-            ActionKind::SelectBlock => {
-                if i + 1 != resp.actions.len() {
-                    return Err(format!("{label}: select_block は最後に 1 つだけ置けます"));
-                }
-                if last_round {
-                    return Err(format!(
-                        "{label}: 撮影回数の上限に達したので、これ以上ブロックを選び直せません"
-                    ));
-                }
-            }
-        }
-    }
-    if let Purpose::Revert { targets } = purpose {
-        for a in &set_values {
-            let expected = targets.iter().any(|t| t.value.trim() == a.value.trim());
-            if !expected {
-                return Err(format!(
-                    "Undo の応答に、戻す値の一覧に無い値が含まれています ({} / {} = {})。実行しません",
-                    a.block, a.parameter, a.value
-                ));
-            }
         }
     }
     Ok(())
@@ -759,33 +596,22 @@ async fn post(
 mod tests {
     use super::*;
 
-    fn action(kind: ActionKind, value: &str) -> AiAction {
-        AiAction {
-            kind,
-            block: "Amp".into(),
-            parameter: "Treble".into(),
-            x: 500.0,
-            y: 800.0,
+    fn change(block: &str, param: &str, value: &str) -> AiChange {
+        AiChange {
+            block: block.into(),
+            parameter: param.into(),
             value: value.into(),
-            previous_value: "5.0".into(),
-            field: 4,
         }
     }
 
-    fn resp(actions: Vec<AiAction>) -> AiResponse {
+    fn resp(changes: Vec<AiChange>) -> AiResponse {
         AiResponse {
             explanation: "x".into(),
-            actions,
-            needs_another_round: false,
+            changes,
             goal_reached: false,
         }
     }
 
-    const ADJUST: Purpose = Purpose::Adjust {
-        instruction: "太く",
-    };
-
-    /// JSON の値のキーを並べる。
     fn keys(v: &Value) -> Vec<String> {
         let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
         k.sort();
@@ -805,48 +631,32 @@ mod tests {
 
     #[test]
     fn response_schema_matches_rust_types() {
-        // AI に渡すスキーマと、応答を読む Rust の型がずれていないかを確かめる
         let schema = response_schema();
         let sample = AiResponse {
             explanation: String::new(),
-            actions: vec![action(ActionKind::SetValue, "1")],
-            needs_another_round: false,
+            changes: vec![change("block2", "Gain 1", "3.0")],
             goal_reached: false,
         };
         let json = serde_json::to_value(&sample).unwrap();
         assert_eq!(keys(&schema["properties"]), keys(&json));
         assert_eq!(strings(&schema["required"]), keys(&json));
 
-        let item = &schema["properties"]["actions"]["items"];
-        assert_eq!(keys(&item["properties"]), keys(&json["actions"][0]));
-        assert_eq!(strings(&item["required"]), keys(&json["actions"][0]));
-
-        let kinds: Vec<String> = [ActionKind::SetValue, ActionKind::SelectBlock]
-            .iter()
-            .map(|k| {
-                serde_json::to_value(k)
-                    .unwrap()
-                    .as_str()
-                    .unwrap()
-                    .to_string()
-            })
-            .collect();
-        let mut kinds_sorted = kinds.clone();
-        kinds_sorted.sort();
-        assert_eq!(strings(&item["properties"]["type"]["enum"]), kinds_sorted);
+        let item = &schema["properties"]["changes"]["items"];
+        assert_eq!(keys(&item["properties"]), keys(&json["changes"][0]));
+        assert_eq!(strings(&item["required"]), keys(&json["changes"][0]));
     }
 
     #[test]
     fn request_offers_search_and_submit_tools_and_requires_one() {
-        let body = build_request("m", &input(ADJUST, &[]));
+        let body = build_request("m", &input("太く", &[]));
         assert_eq!(body["tool_choice"], "required");
         let tools = body["tools"].as_array().unwrap();
-        assert_eq!(tools[0]["function"]["name"], "search_effects");
+        assert_eq!(tools[0]["function"]["name"], SEARCH_TOOL);
         assert_eq!(
             tools[0]["function"]["parameters"]["properties"]["category"]["enum"],
             json!(catalog::CATEGORIES)
         );
-        assert_eq!(tools[1]["function"]["name"], "submit_actions");
+        assert_eq!(tools[1]["function"]["name"], SUBMIT_TOOL);
         assert_eq!(tools[1]["function"]["parameters"], response_schema());
         assert!(body.get("response_format").is_none());
     }
@@ -860,7 +670,7 @@ mod tests {
     }
 
     fn final_args() -> Value {
-        json!({ "explanation": "x", "actions": [], "needs_another_round": false, "goal_reached": true })
+        json!({ "explanation": "x", "changes": [], "goal_reached": true })
     }
 
     #[test]
@@ -868,7 +678,6 @@ mod tests {
         let r = parse_reply(&reply(vec![tool_call("1", SUBMIT_TOOL, final_args())])).unwrap();
         let Reply::Final(r) = r else { panic!("{r:?}") };
         assert!(r.goal_reached);
-        // 引数がオブジェクトのまま届いても読む
         let obj = json!({ "choices": [{ "message": { "tool_calls": [
             { "id": "1", "function": { "name": SUBMIT_TOOL, "arguments": final_args() } }
         ] } }] });
@@ -965,12 +774,14 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_states_the_rules_the_validator_enforces() {
-        // 検証で弾く規則を AI に伝えていないと、毎回弾かれてしまう
-        assert!(SYSTEM_PROMPT.contains("(1000, 1000)"));
-        assert!(SYSTEM_PROMPT.contains(&format!("最大 {MAX_SET_VALUE_ACTIONS} 個")));
-        assert!(SYSTEM_PROMPT.contains("select_block を 1 つだけ"));
-        assert!(SYSTEM_PROMPT.contains("単位を付けない数値"));
+    fn system_prompt_states_the_rules_and_tools() {
+        assert!(SYSTEM_PROMPT.contains(&format!("最大 {MAX_CHANGES} 個")));
+        assert!(SYSTEM_PROMPT.contains(SEARCH_TOOL));
+        assert!(SYSTEM_PROMPT.contains(SUBMIT_TOOL));
+        assert!(SYSTEM_PROMPT.contains(&format!("{MAX_SEARCHES} 回まで")));
+        assert!(SYSTEM_PROMPT.contains("goal_reached を true にし、changes を空にする"));
+        assert!(SYSTEM_PROMPT.contains("[固定: 変更不可]"));
+        assert!(SYSTEM_PROMPT.contains("保存は人間"));
     }
 
     #[test]
@@ -1031,134 +842,55 @@ mod tests {
     }
 
     #[test]
-    fn numeric_values() {
-        for ok in ["6.5", "-3.0", "40", "+1", "0"] {
-            assert!(is_numeric_value(ok), "{ok}");
-        }
-        for ng in [
-            "",
-            "6.5dB",
-            "1/8",
-            "On",
-            "6 5",
-            "1e3",
-            "--",
-            "1234567890123",
+    fn validate_accepts_normal_and_maximum_changes() {
+        let ok = resp(vec![change("block2", "Gain 1", "4.5")]);
+        assert!(validate(&ok).is_ok());
+
+        let max = resp(vec![change("block2", "Gain 1", "1"); MAX_CHANGES]);
+        assert!(validate(&max).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_empty_fields_and_too_many_changes() {
+        let too_many = resp(vec![change("block2", "Gain 1", "1"); MAX_CHANGES + 1]);
+        assert!(validate(&too_many).is_err());
+
+        for bad in [
+            change("", "Gain 1", "1.0"),
+            change("block2", " ", "1.0"),
+            change("block2", "Gain 1", ""),
         ] {
-            assert!(!is_numeric_value(ng), "{ng}");
+            assert!(validate(&resp(vec![bad])).is_err());
         }
     }
 
-    #[test]
-    fn validate_accepts_normal_response() {
-        let r = resp(vec![action(ActionKind::SetValue, "4.5")]);
-        assert!(validate(&r, &ADJUST, false).is_ok());
-    }
-
-    #[test]
-    fn validate_rejects_non_numeric_value() {
-        let r = resp(vec![action(ActionKind::SetValue, "4.5dB")]);
-        assert!(validate(&r, &ADJUST, false).is_err());
-    }
-
-    #[test]
-    fn validate_rejects_out_of_range_coordinates() {
-        let mut a = action(ActionKind::SetValue, "4.5");
-        a.x = 1200.0;
-        assert!(validate(&resp(vec![a]), &ADJUST, false).is_err());
-    }
-
-    #[test]
-    fn validate_accepts_exactly_the_maximum() {
-        let r = resp(vec![
-            action(ActionKind::SetValue, "1");
-            MAX_SET_VALUE_ACTIONS
-        ]);
-        assert!(validate(&r, &ADJUST, false).is_ok());
-    }
-
-    #[test]
-    fn validate_rejects_too_many_actions() {
-        let r = resp(vec![
-            action(ActionKind::SetValue, "1");
-            MAX_SET_VALUE_ACTIONS + 1
-        ]);
-        assert!(validate(&r, &ADJUST, false).is_err());
-    }
-
-    #[test]
-    fn validate_select_block_must_be_last_and_not_on_last_round() {
-        let ok = resp(vec![
-            action(ActionKind::SetValue, "1"),
-            action(ActionKind::SelectBlock, ""),
-        ]);
-        assert!(validate(&ok, &ADJUST, false).is_ok());
-        assert!(validate(&ok, &ADJUST, true).is_err());
-        let ng = resp(vec![
-            action(ActionKind::SelectBlock, ""),
-            action(ActionKind::SetValue, "1"),
-        ]);
-        assert!(validate(&ng, &ADJUST, false).is_err());
-    }
-
-    #[test]
-    fn validate_revert_only_allows_listed_values() {
-        let targets = vec![RestoreTarget {
-            block: "Amp".into(),
-            parameter: "Treble".into(),
-            value: "5.0".into(),
-        }];
-        let purpose = Purpose::Revert { targets: &targets };
-        assert!(
-            validate(
-                &resp(vec![action(ActionKind::SetValue, "5.0")]),
-                &purpose,
-                false
-            )
-            .is_ok()
-        );
-        assert!(
-            validate(
-                &resp(vec![action(ActionKind::SetValue, "7.0")]),
-                &purpose,
-                false
-            )
-            .is_err()
-        );
-    }
-
-    fn input<'a>(purpose: Purpose<'a>, history: &'a [ChatTurn]) -> RequestInput<'a> {
+    fn input<'a>(instruction: &'a str, history: &'a [ChatTurn]) -> RequestInput<'a> {
         RequestInput {
-            purpose,
+            instruction,
             history,
             reference_audio: Some(b"REF"),
             recording_wav: Some(b"WAV"),
-            screenshot_png: b"PNG",
-            screenshot_size: (2400, 1600),
-            round: 1,
-            max_rounds: 4,
-            done_in_this_cycle: &[],
-            earlier_explanations: &[],
+            chain_text: "[block2] Tone Sovereign [ON]\n  - Gain 1: 2.2 (0.0〜10.0)\n",
             changed_parameters: &[],
         }
     }
 
     #[test]
-    fn build_request_contains_all_media_in_order() {
-        let body = build_request("gemini-3.8-flash", &input(ADJUST, &[]));
+    fn build_request_contains_text_and_audio_without_images() {
+        let body = build_request("gemini-3.8-flash", &input("太く", &[]));
         assert_eq!(body["model"], "gemini-3.8-flash");
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages[0]["role"], "system");
         let content = messages.last().unwrap()["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3);
         assert_eq!(content[0]["type"], "text");
-        assert!(content[0]["text"].as_str().unwrap().contains("太く"));
-        assert!(content[0]["text"].as_str().unwrap().contains("2400×1600"));
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(text.contains("太く"));
+        assert!(text.contains("[block2] Tone Sovereign"));
         assert_eq!(content[1]["input_audio"]["format"], "wav");
-        // 期待値は b64 で作らず固定値で書く (b64 が壊れても気づけるように)
         assert_eq!(content[1]["input_audio"]["data"], "UkVG");
         assert_eq!(content[2]["input_audio"]["data"], "V0FW");
         assert_eq!(content[2]["input_audio"]["format"], "wav");
-        assert_eq!(content[3]["image_url"]["url"], "data:image/png;base64,UE5H");
     }
 
     #[test]
@@ -1169,52 +901,23 @@ mod tests {
                 text: format!("turn {i}"),
             })
             .collect();
-        let body = build_request("m", &input(ADJUST, &history));
+        let body = build_request("m", &input("太く", &history));
         let messages = body["messages"].as_array().unwrap();
-        // system + 履歴 + 今回
         assert_eq!(messages.len(), 1 + MAX_HISTORY_TURNS + 1);
         assert_eq!(messages[1]["content"], "turn 12");
     }
 
     #[test]
-    fn build_request_for_revert_lists_targets() {
-        let targets = vec![RestoreTarget {
-            block: "Amp".into(),
-            parameter: "Bass".into(),
-            value: "5.0".into(),
-        }];
-        let mut i = input(Purpose::Revert { targets: &targets }, &[]);
-        i.recording_wav = None;
-        i.reference_audio = None;
-        let body = build_request("m", &i);
-        let content = body["messages"].as_array().unwrap().last().unwrap()["content"]
-            .as_array()
-            .unwrap()
-            .clone();
-        assert!(
-            content[0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("Amp / Bass を 5.0 に戻す")
-        );
-        assert_eq!(content.len(), 2, "テキストと画像だけ");
-    }
-
-    #[test]
-    fn parse_response_reads_json_content() {
-        let content = r#"{"explanation":"高域を下げた","actions":[{"type":"set_value","block":"Amp","parameter":"Treble","x":512,"y":830,"value":"4.0","previous_value":"5.5"}],"needs_another_round":false}"#;
+    fn parse_response_reads_json_content_and_strips_fence() {
+        let content = r#"{"explanation":"高域を下げた","changes":[{"block":"block5","parameter":"Treble","value":"4.0"}],"goal_reached":false}"#;
         let body = json!({ "choices": [{ "message": { "content": content } }] });
         let r = parse_response(&body).unwrap();
-        assert_eq!(r.actions[0].kind, ActionKind::SetValue);
-        assert_eq!(r.actions[0].previous_value, "5.5");
-    }
+        assert_eq!(r.changes[0].block, "block5");
+        assert_eq!(r.changes[0].value, "4.0");
 
-    #[test]
-    fn parse_response_strips_code_fence() {
-        let content =
-            "```json\n{\"explanation\":\"x\",\"actions\":[],\"needs_another_round\":false}\n```";
-        let body = json!({ "choices": [{ "message": { "content": content } }] });
-        assert!(parse_response(&body).unwrap().actions.is_empty());
+        let fenced = "```json\n{\"explanation\":\"x\",\"changes\":[],\"goal_reached\":false}\n```";
+        let body2 = json!({ "choices": [{ "message": { "content": fenced } }] });
+        assert!(parse_response(&body2).unwrap().changes.is_empty());
     }
 
     #[test]
@@ -1232,66 +935,44 @@ mod tests {
     }
 
     #[test]
-    fn audio_is_sent_only_on_the_first_round() {
-        let explanations = vec!["Delay を選んでから Mix を上げる".to_string()];
-        let mut i = input(ADJUST, &[]);
-        i.round = 2;
-        i.earlier_explanations = &explanations;
-        let content = last_content(&build_request("m", &i));
-        let types: Vec<&str> = content
-            .iter()
-            .map(|c| c["type"].as_str().unwrap())
-            .collect();
-        assert_eq!(types, vec!["text", "image_url"], "2 回目は音声を送らない");
-        let text = content[0]["text"].as_str().unwrap();
-        assert!(text.contains("1 回目の問い合わせで渡した"), "{text}");
-        assert!(text.contains("- Delay を選んでから Mix を上げる"), "{text}");
-        assert!(!text.contains("2 つ目の音声"), "{text}");
-    }
-
-    #[test]
     fn history_turns_are_truncated() {
         let history = vec![ChatTurn {
             role: "assistant".into(),
             text: "あ".repeat(MAX_HISTORY_CHARS * 3),
         }];
-        let body = build_request("m", &input(ADJUST, &history));
+        let body = build_request("m", &input("太く", &history));
         let sent = body["messages"][1]["content"].as_str().unwrap();
-        assert_eq!(
-            sent.chars().count(),
-            MAX_HISTORY_CHARS + 1,
-            "上限 + 省略記号"
-        );
+        assert_eq!(sent.chars().count(), MAX_HISTORY_CHARS + 1);
         assert!(sent.ends_with('…'));
         assert_eq!(MAX_HISTORY_CHARS, 400);
     }
 
     #[test]
-    fn changed_parameters_are_listed_for_adjust() {
+    fn changed_parameters_are_listed_in_prompt() {
         let changed = vec![RestoreTarget {
-            block: "Amp".into(),
+            block: "block5".into(),
             parameter: "Treble".into(),
             value: "6.0".into(),
         }];
-        let mut i = input(ADJUST, &[]);
+        let mut i = input("太く", &[]);
         i.changed_parameters = &changed;
         let text = last_content(&build_request("m", &i))[0]["text"]
             .as_str()
             .unwrap()
             .to_string();
-        assert!(text.contains("アプリが打ち込んだ値"), "{text}");
-        assert!(text.contains("- Amp / Treble: 6.0"), "{text}");
-        let plain = last_content(&build_request("m", &input(ADJUST, &[])))[0]["text"]
+        assert!(text.contains("アプリが変えた値"), "{text}");
+        assert!(text.contains("- block5 / Treble: 6.0"), "{text}");
+        let plain = last_content(&build_request("m", &input("太く", &[])))[0]["text"]
             .as_str()
             .unwrap()
             .to_string();
-        assert!(!plain.contains("アプリが打ち込んだ値"));
+        assert!(!plain.contains("アプリが変えた値"));
     }
 
     #[test]
     fn audio_description_matches_what_is_sent() {
         let text = |reference: bool, recording: bool| {
-            let mut i = input(ADJUST, &[]);
+            let mut i = input("太く", &[]);
             if !reference {
                 i.reference_audio = None;
             }
@@ -1307,53 +988,5 @@ mod tests {
         assert!(text(false, true).contains("リファレンスは無い"));
         assert!(text(true, false).contains("現在の音は録音されていない"));
         assert!(text(false, false).contains("音声は無い"));
-    }
-
-    #[test]
-    fn validate_requires_a_field_number_for_set_value() {
-        let mut a = action(ActionKind::SetValue, "4.5");
-        a.field = 0;
-        let e = validate(&resp(vec![a]), &ADJUST, false).unwrap_err();
-        assert!(e.contains("field"), "{e}");
-        let mut b = action(ActionKind::SelectBlock, "");
-        b.field = 0;
-        assert!(
-            validate(&resp(vec![b]), &ADJUST, false).is_ok(),
-            "ブロックの選択には要らない"
-        );
-    }
-
-    #[test]
-    fn system_prompt_explains_how_to_count_fields() {
-        assert!(SYSTEM_PROMPT.contains("上下の矢印がある行だけを上から数えた番号"));
-        assert!(SYSTEM_PROMPT.contains("矢印の無い行 (段階のボタン・Off / On) は数えない"));
-    }
-
-    #[test]
-    fn system_prompt_describes_the_real_hx_edit_screen() {
-        // 実機で星マーク (お気に入り) を押したことがあるので、押してはいけない所を伝える
-        assert!(SYSTEM_PROMPT.contains("右端の数値の文字の中心"));
-        assert!(SYSTEM_PROMPT.contains("星"));
-        assert!(SYSTEM_PROMPT.contains("モデル名の一覧である。押すとモデルが変わってしまう"));
-        assert!(!SYSTEM_PROMPT.contains("ノブの下"));
-    }
-
-    #[test]
-    fn system_prompt_explains_the_tools_and_their_limit() {
-        assert!(SYSTEM_PROMPT.contains(SEARCH_TOOL));
-        assert!(SYSTEM_PROMPT.contains(SUBMIT_TOOL));
-        assert!(SYSTEM_PROMPT.contains(&format!("{MAX_SEARCHES} 回まで")));
-        assert!(SYSTEM_PROMPT.contains("モデルの切り替え"));
-    }
-
-    #[test]
-    fn system_prompt_explains_goal_reached() {
-        assert!(SYSTEM_PROMPT.contains("goal_reached を true にし、actions を空にする"));
-    }
-
-    #[test]
-    fn system_prompt_says_audio_is_not_resent_after_selecting_a_block() {
-        assert!(SYSTEM_PROMPT.contains("音声は渡さない"));
-        assert!(SYSTEM_PROMPT.contains("変える予定のパラメータ"));
     }
 }

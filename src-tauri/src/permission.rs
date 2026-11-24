@@ -12,6 +12,7 @@ pub struct PermissionStatus {
 
 /// 処理を始める前に足りない権限 (種類と表示名)。マイクが未確認 (not_determined) のときは
 /// 録音を始めると macOS が許可を求めるので、足りないとはみなさない。
+#[allow(dead_code)]
 pub fn missing(
     status: &PermissionStatus,
     need_microphone: bool,
