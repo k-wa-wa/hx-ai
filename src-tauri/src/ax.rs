@@ -47,6 +47,7 @@ unsafe extern "C" {
 }
 
 const KEY_G: u16 = 5;
+const KEY_RETURN: u16 = 36;
 /// kCGHIDEventTap: キーボードで打ったのと同じ経路。
 const HID_EVENT_TAP: u32 = 0;
 const FLAG_SHIFT: u64 = 1 << 17;
@@ -210,6 +211,27 @@ impl MacUi {
             .is_some_and(bool::from)
     }
 
+    /// キーを押して離す。プロセスに直接送る (CGEventPostToPid) と保存の画面に届かなかったので、
+    /// キーボードと同じ経路で送る。他のアプリに届かないよう、直前に HX Edit が最前面かを確かめる。
+    fn post_key(&self, key: u16, flags: u64) -> Result<(), String> {
+        if !self.frontmost() {
+            return Err("HX Edit が最前面でないので、キーを送りません".into());
+        }
+        for down in [true, false] {
+            let ev = unsafe { CGEventCreateKeyboardEvent(std::ptr::null(), key, down) };
+            if ev.is_null() {
+                return Err("キーの入力を作れません".into());
+            }
+            unsafe {
+                CGEventSetFlags(ev, flags);
+                CGEventPost(HID_EVENT_TAP, ev);
+                CFRelease(ev as CFTypeRef);
+            }
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        Ok(())
+    }
+
     fn perform(&self, path: &[usize], action: &str) -> Result<(), String> {
         let el = self.resolve(path)?;
         let a = CFString::new(action);
@@ -265,29 +287,26 @@ impl Ui for MacUi {
         Ok(())
     }
 
-    fn confirm(&mut self, path: &[usize]) -> Result<(), String> {
-        self.perform(path, "AXConfirm")
+    fn open_go_to_folder(&mut self) -> Result<(), String> {
+        self.post_key(KEY_G, FLAG_COMMAND | FLAG_SHIFT)
     }
 
-    fn open_go_to_folder(&mut self) -> Result<(), String> {
-        // プロセスに直接送る (CGEventPostToPid) と、保存の画面に届かなかった。
-        // キーボードと同じ経路で送るので、他のアプリに届かないよう、直前に HX Edit が最前面かを確かめる
-        if !self.frontmost() {
-            return Err("HX Edit が最前面でないので、キーを送りません".into());
-        }
-        for down in [true, false] {
-            let ev = unsafe { CGEventCreateKeyboardEvent(std::ptr::null(), KEY_G, down) };
-            if ev.is_null() {
-                return Err("キーの入力を作れません".into());
-            }
-            unsafe {
-                CGEventSetFlags(ev, FLAG_COMMAND | FLAG_SHIFT);
-                CGEventPost(HID_EVENT_TAP, ev);
-                CFRelease(ev as CFTypeRef);
-            }
-            std::thread::sleep(Duration::from_millis(30));
-        }
-        Ok(())
+    fn press_return(&mut self) -> Result<(), String> {
+        // AXConfirm では「フォルダへ移動」が確定しなかった
+        self.post_key(KEY_RETURN, 0)
+    }
+
+    fn list_dir(&self, dir: &FsPath) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
     }
 
     fn bring_to_front(&mut self) -> Result<(), String> {

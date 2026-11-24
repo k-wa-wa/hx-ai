@@ -20,8 +20,10 @@ pub trait Ui {
     fn press(&mut self, path: &[usize]) -> Result<(), String>;
     /// 直前の `snapshot` の `path` の入力欄に文字を入れる。
     fn set_value(&mut self, path: &[usize], value: &str) -> Result<(), String>;
-    /// 入力欄の確定 (Return と同じ)。
-    fn confirm(&mut self, path: &[usize]) -> Result<(), String>;
+    /// Return キーを押す (最前面の HX Edit に)。
+    fn press_return(&mut self) -> Result<(), String>;
+    /// フォルダの中のファイルの名前 (エラーの文に添える)。
+    fn list_dir(&self, dir: &FsPath) -> Vec<String>;
     /// 保存の画面で「フォルダへ移動」を開く (Cmd+Shift+G)。
     fn open_go_to_folder(&mut self) -> Result<(), String>;
     /// HX Edit を最前面にする。
@@ -149,7 +151,8 @@ fn export_in_panel(
         |r| ax_tree::by_id(r, "PathTextField"),
     )?;
     ui.set_value(&field, dir)?;
-    ui.confirm(&field)?;
+    // 実機では AXConfirm では確定しなかったので、Return を押す
+    ui.press_return()?;
     wait_for(
         ui,
         PANEL_TIMEOUT,
@@ -201,9 +204,11 @@ fn export_in_panel(
         }
         ui.wait(POLL);
     }
+    let dir = file.parent().unwrap_or(FsPath::new("/"));
     Err(format!(
-        "書き出したファイルが見つかりません ({})",
-        file.display()
+        "書き出したファイルが見つかりません ({})。フォルダにあるもの: {}",
+        file.display(),
+        ui.list_dir(dir).join(", ")
     ))
 }
 
@@ -297,6 +302,8 @@ mod tests {
         front: bool,
         /// 保存するとダイアログが出る。
         save_opens_dialog: bool,
+        /// 名前の欄に入れた文字が、保存に使われない (欄の見た目だけ変わる)。
+        name_not_used: bool,
         /// 書き出しのメニューが、アクセシビリティでは押せないと出る (実機の保存の直後)。
         export_reported_disabled: bool,
         /// 書き出しのメニューを押しても何も起きない (HX Stomp がつながっていない)。
@@ -318,6 +325,7 @@ mod tests {
                 no_alert: false,
                 front: false,
                 save_opens_dialog: false,
+                name_not_used: false,
                 export_reported_disabled: false,
                 export_does_nothing: false,
             }
@@ -383,8 +391,13 @@ mod tests {
                 }
                 ("AXButton", "Save") => {
                     let p = self.panel.take().unwrap();
+                    let name = if self.name_not_used {
+                        "New Preset"
+                    } else {
+                        &p.name
+                    };
                     self.files
-                        .insert(PathBuf::from(format!("{}/{}.hlx", p.dir, p.name)));
+                        .insert(PathBuf::from(format!("{}/{name}.hlx", p.dir)));
                 }
                 ("AXButton", "Cancel") => self.panel = None,
                 ("AXButton", "CloseButton") => self.panel.as_mut().unwrap().go_to = None,
@@ -405,11 +418,14 @@ mod tests {
             }
             Ok(())
         }
-        fn confirm(&mut self, path: &[usize]) -> Result<(), String> {
-            let n = self.node(path);
-            self.log.push(format!("確定 {}", n.id));
-            let p = self.panel.as_mut().unwrap();
-            let dir = p.go_to.take().unwrap();
+        fn press_return(&mut self) -> Result<(), String> {
+            self.log.push("Return".into());
+            let Some(p) = self.panel.as_mut() else {
+                return Ok(());
+            };
+            let Some(dir) = p.go_to.take() else {
+                return Ok(());
+            };
             if !self.go_to_ignored {
                 p.place = dir.rsplit('/').next().unwrap().into();
                 p.dir = dir;
@@ -437,6 +453,16 @@ mod tests {
         fn file_exists(&self, file: &FsPath) -> bool {
             self.files.contains(file)
         }
+        fn list_dir(&self, dir: &FsPath) -> Vec<String> {
+            let mut names: Vec<String> = self
+                .files
+                .iter()
+                .filter(|f| f.parent() == Some(dir))
+                .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
         fn bring_to_front(&mut self) -> Result<(), String> {
             self.log.push("前面に出す".into());
             self.front = true;
@@ -460,7 +486,7 @@ mod tests {
                 "押す Export Preset...".into(),
                 "Cmd+Shift+G".into(),
                 format!("入れる PathTextField = {DIR}"),
-                "確定 PathTextField".into(),
+                "Return".into(),
                 "入れる saveAsNameTextField = hx-ai-1".into(),
                 "押す Save".into(),
             ]
@@ -477,6 +503,17 @@ mod tests {
         assert!(hx.files.is_empty(), "違う場所に書き出さない");
         assert!(hx.panel.is_none(), "画面を閉じる");
         assert_eq!(hx.log.last().unwrap(), "押す Cancel");
+    }
+
+    #[test]
+    fn a_missing_export_lists_what_is_in_the_folder() {
+        let mut hx = FakeHx::new();
+        hx.name_not_used = true;
+        let e = export(&mut hx, FsPath::new(DIR), "hx-ai-1").unwrap_err();
+        assert!(
+            e.contains("hx-ai-1.hlx") && e.contains("フォルダにあるもの: New Preset.hlx"),
+            "{e}"
+        );
     }
 
     #[test]
