@@ -1,4 +1,4 @@
-//! 実機の HX Edit と HX Stomp で、保存 → 書き出し → 書き換え → 読み込み → 書き出し の往復を確かめる。
+//! 実機の HX Edit と HX Stomp で、書き出し → 書き換え → 読み込み → 書き出し の往復を確かめる。
 //!
 //! 選んでいるスロットを上書きする (最後に元に戻す)。空いているスロットを選んでから、手で走らせる:
 //!
@@ -67,7 +67,8 @@ fn hx_edit_round_trip() {
     println!("書き出し先: {}", dir.display());
     let mut ui = MacUi::connect().unwrap();
 
-    step("保存", || hx_io::save(&mut ui));
+    // 保存 (Save Preset) の直後は、手で操作しても書き出しが効かない時間があった。
+    // 切り分けるため、ここでは保存せず、書き出しと読み込みの往復だけを確かめる
     let original = step("書き出し (元)", || {
         hx_io::export(&mut ui, &dir, "original")
     });
