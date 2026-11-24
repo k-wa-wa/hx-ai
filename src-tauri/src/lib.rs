@@ -135,10 +135,13 @@ async fn hx_status(state: State<'_, AppState>) -> Result<hx_device::HxStatus, St
 
 #[tauri::command]
 async fn disconnect_hx(state: State<'_, AppState>) -> Result<hx_device::HxStatus, String> {
-    state.disconnect_hx();
-    tauri::async_runtime::spawn_blocking(move || hx_device::probe_status(false))
-        .await
-        .map_err(|e| e.to_string())?
+    let hx = state.hx.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        workflow::disconnect_hx_port(&hx);
+        hx_device::probe_status(false)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

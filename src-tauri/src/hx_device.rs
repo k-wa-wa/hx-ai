@@ -4,12 +4,18 @@
 //! 「現在の編集バッファの読み取り」「許可されたパラメータの変更」「Undo による復元」のみに絞る。
 //! プリセットの保存 (`save`)・切り替え (`select`)・モデル変更・本体設定変更は行わない。
 
-// まだ使われていない補助 (disconnect 等) や将来の調整に備える
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use hx_catalog::{Catalog, Kind as CatalogKind};
 use hx_proto::{DeviceProfile, Preset, Value as WireValue, rpc};
 use serde::Serialize;
+
+/// 実機のアイドル切断を防ぐため、tonepush-gui と同じ 700ms 周期で keepalive を送る。
+pub const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(700);
 
 /// UI に返す HX Stomp の USB 接続状態。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -546,6 +552,23 @@ impl UsbHxPort {
         self.session.is_some()
     }
 
+    /// 機器からの未読イベントを ACK しつつ keepalive を送る。失敗したらセッションを手放す。
+    pub fn keepalive(&mut self) -> Result<(), String> {
+        let Some(session) = self.session.as_mut() else {
+            return Ok(());
+        };
+        let res = session
+            .poll_notifications()
+            .map(|_| ())
+            .and_then(|_| session.keepalive());
+        if let Err(err) = res {
+            // poll_notifications / keepalive がエラーのときはトランスポート状態が信用できないため閉じる
+            self.session = None;
+            return Err(format_usb_error(err));
+        }
+        Ok(())
+    }
+
     fn ensure_session(&mut self) -> Result<&mut hx_usb::Session, String> {
         if self.session.is_none() {
             let devices = hx_usb::list().map_err(|e| format!("USB デバイスを探せません: {e}"))?;
@@ -634,6 +657,72 @@ impl HxPort for UsbHxPort {
             return Err(format_usb_error(e));
         }
         Ok(())
+    }
+}
+
+/// バックグラウンド keepalive が叩く対象 (テストでは偽物に差し替える)。
+pub trait KeepalivePort {
+    fn keepalive(&mut self) -> Result<(), String>;
+}
+
+impl KeepalivePort for UsbHxPort {
+    fn keepalive(&mut self) -> Result<(), String> {
+        UsbHxPort::keepalive(self)
+    }
+}
+
+/// 他の USB 読み書きでロックされていないときだけ 1 回 keepalive を進める。
+pub fn keepalive_step<P: KeepalivePort>(port: &Mutex<Option<P>>) {
+    match port.try_lock() {
+        Ok(mut guard) => {
+            if let Some(p) = guard.as_mut() {
+                let _ = p.keepalive();
+            }
+        }
+        Err(TryLockError::WouldBlock) => {}
+        Err(TryLockError::Poisoned(e)) => {
+            if let Some(p) = e.into_inner().as_mut() {
+                let _ = p.keepalive();
+            }
+        }
+    }
+}
+
+/// keepalive スレッドの寿命管理。Drop 時に即座に起こして終了を待つ。
+pub struct KeepaliveGuard {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for KeepaliveGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.thread.take() {
+            handle.thread().unpark();
+            let _ = handle.join();
+        }
+    }
+}
+
+/// USB セッションがアイドルで切断されないよう、`interval` ごとに keepalive を送るスレッドを起動する。
+pub fn spawn_keepalive<P: KeepalivePort + Send + 'static>(
+    port: Arc<Mutex<Option<P>>>,
+    interval: Duration,
+) -> KeepaliveGuard {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = stop.clone();
+    let thread = std::thread::spawn(move || {
+        while !flag.load(Ordering::SeqCst) {
+            std::thread::park_timeout(interval);
+            if flag.load(Ordering::SeqCst) {
+                break;
+            }
+            keepalive_step(&port);
+        }
+    });
+    KeepaliveGuard {
+        stop,
+        thread: Some(thread),
     }
 }
 
@@ -1048,18 +1137,26 @@ mod tests {
         assert_eq!(port.writes, vec![(2, 0, WireValue::F32(0.22))]);
     }
 
-    /// 実機の HX Stomp / HX Stomp XL で、読み込み → 1 パラメータ変更 → 読み返し → 復元 → 読み返しを確かめる。
-    #[test]
-    #[ignore]
-    fn hx_usb_round_trip() {
+    fn verify_usb_round_trip(idle_wait: Duration) {
         assert_eq!(
             std::env::var("HX_USB_LIVE").as_deref(),
             Ok("1"),
             "実機の編集バッファを書き換えるため、HX_USB_LIVE=1 を付けたときだけ走らせる"
         );
-        let mut port = UsbHxPort::new().unwrap();
-        let before = port.read_snapshot().unwrap();
+        let port = Arc::new(Mutex::new(Some(UsbHxPort::new().unwrap())));
+        let before = port
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .read_snapshot()
+            .unwrap();
         println!("接続成功:\n{}", render_chain(&before));
+
+        if !idle_wait.is_zero() {
+            let _guard = spawn_keepalive(port.clone(), KEEPALIVE_INTERVAL);
+            std::thread::sleep(idle_wait);
+        }
 
         let (block_id, param_name, next_val, old_val) = before
             .blocks
@@ -1093,7 +1190,7 @@ mod tests {
             .expect("動かせる数値パラメータが現在のプリセットにありません");
 
         let applied = apply_changes(
-            &mut port,
+            port.lock().unwrap().as_mut().unwrap(),
             &before,
             &[Change {
                 block: block_id.clone(),
@@ -1103,7 +1200,13 @@ mod tests {
         )
         .unwrap()
         .applied;
-        let after = port.read_snapshot().unwrap();
+        let after = port
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .read_snapshot()
+            .unwrap();
         let changed = after
             .blocks
             .iter()
@@ -1119,9 +1222,15 @@ mod tests {
             changed.value
         );
 
-        let failures = restore_changes(&mut port, &applied);
+        let failures = restore_changes(port.lock().unwrap().as_mut().unwrap(), &applied);
         assert!(failures.is_empty(), "復元に失敗: {failures:?}");
-        let restored = port.read_snapshot().unwrap();
+        let restored = port
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .read_snapshot()
+            .unwrap();
         let back = restored
             .blocks
             .iter()
@@ -1133,5 +1242,107 @@ mod tests {
             .unwrap();
         assert_eq!(back.value, old_val, "元の値に戻っていません");
         println!("復元確認: {block_id} / {param_name} = {}", back.value);
+    }
+
+    /// 実機の HX Stomp / HX Stomp XL で、読み込み → 1 パラメータ変更 → 読み返し → 復元 → 読み返しを確かめる。
+    #[test]
+    #[ignore]
+    fn hx_usb_round_trip() {
+        verify_usb_round_trip(Duration::ZERO);
+    }
+
+    struct FakeKeepalivePort {
+        ticks: Arc<AtomicUsize>,
+        fail: bool,
+        dropped_session: bool,
+    }
+
+    impl KeepalivePort for FakeKeepalivePort {
+        fn keepalive(&mut self) -> Result<(), String> {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                self.dropped_session = true;
+                Err("keepalive failed".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn keepalive_step_ticks_open_port_and_ignores_none() {
+        let none_port: Mutex<Option<FakeKeepalivePort>> = Mutex::new(None);
+        keepalive_step(&none_port);
+
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let port = Mutex::new(Some(FakeKeepalivePort {
+            ticks: ticks.clone(),
+            fail: false,
+            dropped_session: false,
+        }));
+        keepalive_step(&port);
+        keepalive_step(&port);
+        assert_eq!(ticks.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn keepalive_step_skips_while_port_mutex_is_locked() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let port = Mutex::new(Some(FakeKeepalivePort {
+            ticks: ticks.clone(),
+            fail: false,
+            dropped_session: false,
+        }));
+        let _busy = port.lock().unwrap();
+        keepalive_step(&port);
+        assert_eq!(ticks.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn keepalive_step_continues_after_error() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let port = Mutex::new(Some(FakeKeepalivePort {
+            ticks: ticks.clone(),
+            fail: true,
+            dropped_session: false,
+        }));
+        keepalive_step(&port);
+        assert_eq!(ticks.load(Ordering::SeqCst), 1);
+        assert!(port.lock().unwrap().as_ref().unwrap().dropped_session);
+    }
+
+    #[test]
+    fn spawn_keepalive_runs_periodically_and_stops_on_drop() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let port = Arc::new(Mutex::new(Some(FakeKeepalivePort {
+            ticks: ticks.clone(),
+            fail: false,
+            dropped_session: false,
+        })));
+        let guard = spawn_keepalive(port, Duration::from_millis(10));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while ticks.load(Ordering::SeqCst) < 3 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "keepalive が周期実行されなかった"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let stopped_at = std::time::Instant::now();
+        drop(guard);
+        assert!(
+            stopped_at.elapsed() < Duration::from_millis(200),
+            "Drop で即座に止まらなかった"
+        );
+        let frozen = ticks.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(40));
+        assert_eq!(ticks.load(Ordering::SeqCst), frozen);
+    }
+
+    /// AI 問い合わせ待ちを模擬し、読み込みから 12 秒アイドルを挟んだあと書き込みと復元が通ることを確かめる。
+    #[test]
+    #[ignore]
+    fn hx_usb_idle_keepalive_round_trip() {
+        verify_usb_round_trip(Duration::from_secs(12));
     }
 }

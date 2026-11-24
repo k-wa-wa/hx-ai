@@ -102,6 +102,8 @@ pub struct AppState {
     pub loop_extra: Arc<Mutex<Vec<String>>>,
     /// HX Stomp との USB 接続 (1 セッションを保持して再接続待ちを省く)。
     pub hx: Arc<Mutex<Option<UsbHxPort>>>,
+    /// USB セッションのアイドル切断を防ぐバックグラウンド keepalive。
+    hx_keepalive: Mutex<Option<hx_device::KeepaliveGuard>>,
 }
 
 impl AppState {
@@ -119,6 +121,19 @@ impl AppState {
             loop_stop: Arc::new(AtomicBool::new(false)),
             loop_extra: Arc::new(Mutex::new(Vec::new())),
             hx: Arc::new(Mutex::new(None)),
+            hx_keepalive: Mutex::new(None),
+        }
+    }
+
+    /// USB セッションを使う前に、バックグラウンドの keepalive ループを 1 度だけ起動する。
+    pub fn ensure_hx_keepalive(&self) {
+        if let Ok(mut guard) = self.hx_keepalive.lock()
+            && guard.is_none()
+        {
+            *guard = Some(hx_device::spawn_keepalive(
+                self.hx.clone(),
+                hx_device::KEEPALIVE_INTERVAL,
+            ));
         }
     }
 
@@ -141,12 +156,30 @@ impl AppState {
             .unwrap_or(false)
     }
 
-    pub fn disconnect_hx(&self) {
-        if let Ok(mut guard) = self.hx.lock()
-            && let Some(port) = guard.as_mut()
-        {
-            port.disconnect();
+    fn tauri_engine(
+        &self,
+        app: &AppHandle,
+        settings: ResolvedSettings,
+        device_id: Option<String>,
+        seconds: u32,
+    ) -> TauriEngine {
+        self.ensure_hx_keepalive();
+        TauriEngine {
+            app: app.clone(),
+            settings,
+            hx: self.hx.clone(),
+            device_id,
+            seconds,
         }
+    }
+}
+
+/// 保持している USB セッションを解放する (HX Edit を使いたいとき用)。
+pub fn disconnect_hx_port(hx: &Mutex<Option<UsbHxPort>>) {
+    if let Ok(mut guard) = hx.lock()
+        && let Some(port) = guard.as_mut()
+    {
+        port.disconnect();
     }
 }
 
@@ -834,13 +867,7 @@ pub async fn send_message(
     }
     let settings = state.resolved_settings()?;
     let model = settings.model.clone();
-    let mut engine = TauriEngine {
-        app: app.clone(),
-        settings,
-        hx: state.hx.clone(),
-        device_id: None,
-        seconds: 0,
-    };
+    let mut engine = state.tauri_engine(&app, settings, None, 0);
     let report = send(&mut engine, state, &model, &instruction).await;
     emit_progress(&app, "done", "完了".into());
     report
@@ -860,13 +887,7 @@ pub async fn run_loop(
     let settings = state.resolved_settings()?;
     ensure_microphone_permission()?;
     let model = settings.model.clone();
-    let mut engine = TauriEngine {
-        app: app.clone(),
-        settings,
-        hx: state.hx.clone(),
-        device_id,
-        seconds,
-    };
+    let mut engine = state.tauri_engine(&app, settings, device_id, seconds);
     // 録音の前に HX Stomp が USB で繋がっているか確かめる
     engine.read_chain().await?;
     let summary = auto_loop(&mut engine, state, &model, &instruction, max_iterations).await;
@@ -877,13 +898,7 @@ pub async fn run_loop(
 pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, String> {
     let _busy = BusyGuard::acquire(&state.busy)?;
     let settings = state.resolved_settings()?;
-    let mut engine = TauriEngine {
-        app: app.clone(),
-        settings,
-        hx: state.hx.clone(),
-        device_id: None,
-        seconds: 0,
-    };
+    let mut engine = state.tauri_engine(&app, settings, None, 0);
     let report = revert(&mut engine, state).await;
     emit_progress(&app, "done", "完了".into());
     report
@@ -1021,5 +1036,19 @@ mod tests {
         assert_eq!(MAX_CONSECUTIVE_FAILURES, 3);
         assert_eq!(LOOP_SETTLE, Duration::from_secs(1));
         assert_eq!(MAX_LOOP_EXTRA_INSTRUCTIONS, 5);
+    }
+
+    #[test]
+    fn keepalive_guard_starts_once_and_disconnect_handles_none() {
+        let s = AppState::new(
+            std::env::temp_dir().join("unused.json"),
+            StoredSettings::default(),
+        );
+        disconnect_hx_port(&s.hx);
+        assert!(!s.is_hx_session_open());
+        s.ensure_hx_keepalive();
+        assert!(s.hx_keepalive.lock().unwrap().is_some());
+        s.ensure_hx_keepalive();
+        assert!(s.hx_keepalive.lock().unwrap().is_some());
     }
 }
