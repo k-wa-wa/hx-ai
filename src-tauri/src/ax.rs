@@ -43,10 +43,12 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn CGEventCreateKeyboardEvent(source: *const c_void, key: u16, down: bool) -> *mut c_void;
     fn CGEventSetFlags(event: *mut c_void, flags: u64);
-    fn CGEventPostToPid(pid: i32, event: *mut c_void);
+    fn CGEventPost(tap: u32, event: *mut c_void);
 }
 
 const KEY_G: u16 = 5;
+/// kCGHIDEventTap: キーボードで打ったのと同じ経路。
+const HID_EVENT_TAP: u32 = 0;
 const FLAG_SHIFT: u64 = 1 << 17;
 const FLAG_COMMAND: u64 = 1 << 20;
 
@@ -268,7 +270,11 @@ impl Ui for MacUi {
     }
 
     fn open_go_to_folder(&mut self) -> Result<(), String> {
-        // HX Edit のプロセスにだけ送る (最前面のアプリが変わっていても他のアプリに届かない)
+        // プロセスに直接送る (CGEventPostToPid) と、保存の画面に届かなかった。
+        // キーボードと同じ経路で送るので、他のアプリに届かないよう、直前に HX Edit が最前面かを確かめる
+        if !self.frontmost() {
+            return Err("HX Edit が最前面でないので、キーを送りません".into());
+        }
         for down in [true, false] {
             let ev = unsafe { CGEventCreateKeyboardEvent(std::ptr::null(), KEY_G, down) };
             if ev.is_null() {
@@ -276,7 +282,7 @@ impl Ui for MacUi {
             }
             unsafe {
                 CGEventSetFlags(ev, FLAG_COMMAND | FLAG_SHIFT);
-                CGEventPostToPid(self.pid, ev);
+                CGEventPost(HID_EVENT_TAP, ev);
                 CFRelease(ev as CFTypeRef);
             }
             std::thread::sleep(Duration::from_millis(30));
