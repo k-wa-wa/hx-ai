@@ -28,3 +28,4 @@ dist-ssr
 
 # Claude Code の実行時ロック
 .claude/scheduled_tasks.lock
+.env.bak

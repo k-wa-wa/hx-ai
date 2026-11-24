@@ -39,6 +39,20 @@ Tauri v2 (Rust) + React + TypeScript で作り、AI は OpenAI 互換の Chat Co
 
 開発時 (debug ビルド。`npm run tauri dev`) だけは、設定画面で空の項目を `.env` / 環境変数で補う。配布する `.app` (release ビルド) は `.env` も環境変数も読まない。
 
+`.env` には Gemini と OpenRouter の 2 つのブロック (それぞれ `OPENAI_API_KEY`・`OPENAI_BASE_URL`・`OPENAI_MODEL`) を書いておき、使わない方をコメントアウトして切り替える。切り替えたら開発起動をし直す。設定画面に値を保存してあると、そちらが優先される。
+
+```sh
+# Gemini
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+OPENAI_MODEL=gemini-3.8-flash
+
+# OpenRouter
+# OPENAI_API_KEY=...
+# OPENAI_BASE_URL=https://openrouter.ai/api/v1
+# OPENAI_MODEL=google/gemini-3.8-flash
+```
+
 | 項目 | 開発時の環境変数 | 既定値 |
 | --- | --- | --- |
 | API キー | `OPENAI_API_KEY` | なし (無ければエラー) |
