@@ -13,7 +13,7 @@ use core_foundation::base::{CFRelease, CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
-use objc2_app_kit::NSRunningApplication;
+use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
 use objc2_foundation::NSString;
 
 use crate::ax_tree::Node;
@@ -201,6 +201,13 @@ impl MacUi {
         Ok(el)
     }
 
+    /// HX Edit が最前面か (HX Edit 自身の答え)。
+    fn frontmost(&self) -> bool {
+        attr(&self.app, "AXFrontmost")
+            .and_then(|v| v.downcast::<CFBoolean>())
+            .is_some_and(bool::from)
+    }
+
     fn perform(&self, path: &[usize], action: &str) -> Result<(), String> {
         let el = self.resolve(path)?;
         let a = CFString::new(action);
@@ -278,7 +285,22 @@ impl Ui for MacUi {
     }
 
     fn bring_to_front(&mut self) -> Result<(), String> {
-        crate::macos::activate(self.pid)
+        // 最前面かは HX Edit 自身に聞く (AXFrontmost)。NSWorkspace の「最前面のアプリ」は
+        // 画面を持たない処理 (cargo test) では更新されず、古いまま (Code など) になった
+        if self.frontmost() {
+            return Ok(());
+        }
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(self.pid)
+            .ok_or("HX Edit が終了しています")?;
+        #[allow(deprecated)]
+        app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(100));
+            if self.frontmost() {
+                return Ok(());
+            }
+        }
+        Err("HX Edit を最前面にできませんでした (HX Edit が最前面でないと答えた)".into())
     }
 
     fn open_in_hx_edit(&mut self, file: &FsPath) -> Result<(), String> {
