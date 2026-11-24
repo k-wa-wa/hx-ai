@@ -62,15 +62,18 @@ fn wait_for<T>(
     Err(format!("{what} (画面: {seen})"))
 }
 
+/// File メニューの項目を押す。保存の直後などはしばらく押せないので、押せるようになるまで待つ。
 fn press_menu(ui: &mut dyn Ui, item: &str) -> Result<(), String> {
     let root = ui.snapshot()?;
-    let path = ax_tree::menu_item(&root, "File", item)
-        .ok_or_else(|| format!("HX Edit のメニュー File > {item} が見つかりません"))?;
-    if !root.get(&path).is_some_and(|n| n.enabled) {
-        return Err(format!(
-            "HX Edit のメニュー File > {item} が押せません (HX Stomp がつながっていない恐れ)"
-        ));
+    if ax_tree::menu_item(&root, "File", item).is_none() {
+        return Err(format!("HX Edit のメニュー File > {item} が見つかりません"));
     }
+    let path = wait_for(
+        ui,
+        PANEL_TIMEOUT,
+        &format!("HX Edit のメニュー File > {item} が押せません (HX Stomp がつながっていない恐れ)"),
+        |r| ax_tree::menu_item(r, "File", item).filter(|p| r.get(p).is_some_and(|n| n.enabled)),
+    )?;
     ui.press(&path)
 }
 
@@ -281,8 +284,9 @@ mod tests {
         no_alert: bool,
         /// 保存するとダイアログが出る。
         save_opens_dialog: bool,
-        /// 書き出しのメニューが押せない (HX Stomp がつながっていない)。
-        export_disabled: bool,
+        /// 書き出しのメニューが、写し取るこの回数のあいだ押せない
+        /// (保存の直後。usize::MAX なら HX Stomp がつながっていない)。
+        export_disabled_for: usize,
     }
 
     impl FakeHx {
@@ -299,7 +303,7 @@ mod tests {
                 alert_shows: None,
                 no_alert: false,
                 save_opens_dialog: false,
-                export_disabled: false,
+                export_disabled_for: 0,
             }
         }
 
@@ -310,7 +314,7 @@ mod tests {
                     .map(|p| save_panel(&p.place, &p.name, p.go_to.as_deref().map(go_to_sheet)))
                     .collect(),
             )]);
-            if self.export_disabled {
+            if self.export_disabled_for > 0 {
                 let p = ax_tree::menu_item(&root, "File", "Export Preset...").unwrap();
                 let (last, parent) = p.split_last().unwrap();
                 let mut n = &mut root;
@@ -335,6 +339,7 @@ mod tests {
     impl Ui for FakeHx {
         fn snapshot(&mut self) -> Result<Node, String> {
             self.last = self.tree();
+            self.export_disabled_for = self.export_disabled_for.saturating_sub(1);
             Ok(self.last.clone())
         }
         fn press(&mut self, path: &[usize]) -> Result<(), String> {
@@ -464,10 +469,19 @@ mod tests {
     #[test]
     fn export_needs_the_menu_to_be_enabled() {
         let mut hx = FakeHx::new();
-        hx.export_disabled = true;
+        hx.export_disabled_for = usize::MAX;
         let e = export(&mut hx, FsPath::new(DIR), "hx-ai-1").unwrap_err();
         assert!(e.contains("押せません"), "{e}");
         assert!(hx.log.is_empty());
+    }
+
+    #[test]
+    fn export_waits_for_the_menu_that_is_briefly_disabled_after_saving() {
+        // 実機では、保存の直後に Export Preset... が押せない状態だった
+        let mut hx = FakeHx::new();
+        hx.export_disabled_for = 3;
+        export(&mut hx, FsPath::new(DIR), "hx-ai-1").unwrap();
+        assert_eq!(hx.log[0], "押す Export Preset...");
     }
 
     // ---- 読み込み ----
