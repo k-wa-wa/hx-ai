@@ -1,18 +1,16 @@
-//! 機種ごとのエフェクト一覧。AI がツール (search_effects) で引く。
+//! HX Stomp のエフェクト一覧。AI がツール (search_effects) で引く。
 //!
-//! 一覧は各機種の公式マニュアルから作った `catalog/*.json` である。毎回のリクエストに
+//! 一覧は公式マニュアルから作った `catalog/hx_stomp.json` である。毎回のリクエストに
 //! 全部を載せると大きすぎるので、カテゴリとキーワードで絞った分だけを返す。
 
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::device::Device;
-
 /// 検索 1 回で返すモデルの数の上限。超えた分は件数だけ伝え、絞り込みを促す。
 pub const MAX_RESULTS: usize = 15;
 
-/// 両機種で共通のカテゴリ。
+/// カテゴリ。
 pub const CATEGORIES: [&str; 11] = [
     "dynamics",
     "drive",
@@ -31,9 +29,6 @@ pub const CATEGORIES: [&str; 11] = [
 pub struct Model {
     pub name: String,
     pub category: String,
-    /// 機種の中での置き場所 (GP-5 のモジュール名など)。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub module: Option<String>,
     #[serde(rename = "type")]
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -42,13 +37,10 @@ pub struct Model {
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub params: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Catalog {
-    pub device: Device,
     pub source: String,
     pub models: Vec<Model>,
 }
@@ -62,22 +54,12 @@ pub struct SearchResult {
     pub models: Vec<Model>,
 }
 
-fn parse(device: Device, json: &str) -> Catalog {
-    let c: Catalog =
-        serde_json::from_str(json).expect("catalog/*.json が読めない (テストで確かめている)");
-    assert_eq!(c.device, device, "別の機種の一覧を読んだ");
-    c
-}
-
-pub fn catalog(device: Device) -> &'static Catalog {
+pub fn catalog() -> &'static Catalog {
     static HX: OnceLock<Catalog> = OnceLock::new();
-    static GP5: OnceLock<Catalog> = OnceLock::new();
-    match device {
-        Device::HxStomp => {
-            HX.get_or_init(|| parse(device, include_str!("../catalog/hx_stomp.json")))
-        }
-        Device::Gp5 => GP5.get_or_init(|| parse(device, include_str!("../catalog/gp5.json"))),
-    }
+    HX.get_or_init(|| {
+        serde_json::from_str(include_str!("../catalog/hx_stomp.json"))
+            .expect("catalog/hx_stomp.json が読めない (テストで確かめている)")
+    })
 }
 
 /// 照合用に小文字にし、「系」を除く (「TS系」でも「TS」でも引けるように)。
@@ -87,7 +69,6 @@ fn normalize(s: &str) -> String {
 
 fn haystack(m: &Model) -> String {
     let mut parts = vec![m.name.as_str(), m.kind.as_str()];
-    parts.extend(m.module.as_deref());
     parts.extend(m.based_on.as_deref());
     parts.extend(m.note.as_deref());
     parts.extend(m.tags.iter().map(String::as_str));
@@ -109,11 +90,7 @@ fn matches_term(haystack: &str, term: &str) -> bool {
 }
 
 /// カテゴリとキーワードで探す。キーワードは空白で区切り、すべてを含むものを返す。
-pub fn search(
-    device: Device,
-    category: Option<&str>,
-    query: Option<&str>,
-) -> Result<SearchResult, String> {
+pub fn search(category: Option<&str>, query: Option<&str>) -> Result<SearchResult, String> {
     let category = category.map(str::trim).filter(|c| !c.is_empty());
     if let Some(c) = category
         && !CATEGORIES.contains(&c)
@@ -132,7 +109,7 @@ pub fn search(
     if category.is_none() && terms.is_empty() {
         return Err("category か query のどちらかを指定してください".to_string());
     }
-    let c = catalog(device);
+    let c = catalog();
     let hits: Vec<&Model> = c
         .models
         .iter()
@@ -158,61 +135,51 @@ mod tests {
     }
 
     #[test]
-    fn catalogs_load_and_are_well_formed() {
-        for (device, count) in [(Device::HxStomp, 428), (Device::Gp5, 111)] {
-            let c = catalog(device);
-            assert_eq!(c.device, device);
-            assert!(!c.source.is_empty());
-            // 件数が変わったら、一覧を作り直したことに気づけるように固定する
-            assert_eq!(c.models.len(), count, "{device:?}");
-            let mut seen = std::collections::HashSet::new();
-            for m in &c.models {
-                assert!(CATEGORIES.contains(&m.category.as_str()), "{}", m.name);
-                assert!(
-                    seen.insert((m.name.clone(), m.kind.clone())),
-                    "重複: {}",
-                    m.name
-                );
-                assert!(
-                    m.based_on.is_some() || m.note.is_some(),
-                    "元にした機種か説明が要る: {}",
-                    m.name
-                );
-            }
+    fn catalog_loads_and_is_well_formed() {
+        let c = catalog();
+        assert!(!c.source.is_empty());
+        // 件数が変わったら、一覧を作り直したことに気づけるように固定する
+        assert_eq!(c.models.len(), 428);
+        let mut seen = std::collections::HashSet::new();
+        for m in &c.models {
+            assert!(CATEGORIES.contains(&m.category.as_str()), "{}", m.name);
+            assert!(
+                seen.insert((m.name.clone(), m.kind.clone())),
+                "重複: {}",
+                m.name
+            );
+            assert!(
+                m.based_on.is_some() || m.note.is_some(),
+                "元にした機種か説明が要る: {}",
+                m.name
+            );
         }
     }
 
     #[test]
-    fn every_category_is_used_by_some_model() {
+    fn every_category_but_other_is_used_by_some_model() {
         for c in CATEGORIES.iter().filter(|c| **c != "other") {
-            assert!(
-                search(Device::HxStomp, Some(c), None).unwrap().total > 0,
-                "{c}"
-            );
-            assert!(search(Device::Gp5, Some(c), None).unwrap().total > 0, "{c}");
+            assert!(search(Some(c), None).unwrap().total > 0, "{c}");
         }
     }
 
     #[test]
     fn search_by_lineage_tag_with_or_without_kei() {
-        let gp5 = search(Device::Gp5, None, Some("TS系")).unwrap();
-        assert_eq!(names(&gp5), vec!["Green OD"]);
-        let hx = search(Device::HxStomp, Some("drive"), Some("ts")).unwrap();
-        assert_eq!(names(&hx), vec!["Scream 808", "Screamer"]);
+        let r = search(None, Some("TS系")).unwrap();
+        assert_eq!(names(&r), vec!["Scream 808", "Screamer"]);
+        let r = search(Some("drive"), Some("ts")).unwrap();
+        assert_eq!(names(&r), vec!["Scream 808", "Screamer"]);
     }
 
     #[test]
-    fn bb_finds_both_meanings() {
-        // 「BB系」は Xotic BB Preamp と Bluesbreaker 系の両方を指しうる
-        let gp5 = search(Device::Gp5, Some("drive"), Some("BB系")).unwrap();
-        assert_eq!(names(&gp5), vec!["B-Boost"]);
-        let hx = search(Device::HxStomp, Some("drive"), Some("bb")).unwrap();
-        assert_eq!(names(&hx), vec!["Heir Apparent", "Tone Sovereign"]);
+    fn bb_finds_bluesbreaker_style_drives() {
+        let r = search(Some("drive"), Some("bb")).unwrap();
+        assert_eq!(names(&r), vec!["Heir Apparent", "Tone Sovereign"]);
     }
 
     #[test]
     fn search_matches_based_on_case_insensitively_and_requires_all_terms() {
-        let r = search(Device::HxStomp, Some("amp"), Some("marshall BRIGHT")).unwrap();
+        let r = search(Some("amp"), Some("marshall BRIGHT")).unwrap();
         assert_eq!(
             names(&r),
             vec!["Brit J45 Brt", "Brit Trem Brt", "Brit Plexi Brt"]
@@ -233,49 +200,45 @@ mod tests {
 
     #[test]
     fn category_filters_results() {
-        let r = search(Device::HxStomp, Some("delay"), Some("ping pong")).unwrap();
+        let r = search(Some("delay"), Some("ping pong")).unwrap();
         assert_eq!(r.total, 2, "新しいものと Legacy の 2 つ");
         assert!(r.models.iter().all(|m| m.category == "delay"));
-        let none = search(Device::HxStomp, Some("reverb"), Some("ping pong")).unwrap();
+        let none = search(Some("reverb"), Some("ping pong")).unwrap();
         assert_eq!(none.total, 0);
     }
 
     #[test]
     fn results_are_capped_but_total_is_reported() {
-        let r = search(Device::HxStomp, Some("amp"), None).unwrap();
+        let r = search(Some("amp"), None).unwrap();
         assert_eq!(r.total, 113);
         assert_eq!(r.models.len(), MAX_RESULTS);
-        let small = search(Device::Gp5, Some("reverb"), None).unwrap();
-        assert_eq!((small.total, small.models.len()), (10, 10));
-    }
-
-    #[test]
-    fn gp5_models_carry_their_parameters() {
-        let r = search(Device::Gp5, None, Some("Darktale")).unwrap();
-        assert_eq!(r.models[0].params, vec!["Gain", "Filter", "VOL"]);
-        assert_eq!(r.models[0].module.as_deref(), Some("DST"));
+        let small = search(Some("eq"), None).unwrap();
+        assert_eq!((small.total, small.models.len()), (8, 8));
     }
 
     #[test]
     fn invalid_requests_are_errors() {
         assert!(
-            search(Device::Gp5, Some("fuzz"), None)
+            search(Some("fuzz"), None)
                 .unwrap_err()
                 .contains("不明なカテゴリ")
         );
-        assert!(search(Device::Gp5, None, Some("  ")).is_err());
-        assert!(search(Device::Gp5, Some(" "), None).is_err());
+        assert!(search(None, Some("  ")).is_err());
+        assert!(search(Some(" "), None).is_err());
     }
 
     #[test]
     fn empty_fields_are_left_out_of_results() {
-        let r = search(Device::HxStomp, None, Some("Stupor")).unwrap();
+        let r = search(None, Some("Stupor")).unwrap();
         let json = serde_json::to_value(&r.models[0]).unwrap();
         assert!(
-            json.get("params").is_none(),
-            "HX の一覧にはパラメータが無い"
+            json.get("note").is_none(),
+            "元にした機種があるので説明は無い"
         );
-        assert!(json.get("module").is_none());
         assert_eq!(json["type"], "Mono, Stereo");
+        let original = search(None, Some("Thrifter")).unwrap();
+        let json = serde_json::to_value(&original.models[0]).unwrap();
+        assert!(json.get("based_on").is_none());
+        assert_eq!(json["note"], "Line 6 Original");
     }
 }

@@ -22,8 +22,7 @@ export const GRANTED: PermissionStatus = {
 };
 
 export const SETTINGS: SettingsView = {
-  stored: { device: "", api_base_url: "", model: "", target_app: "", has_api_key: false },
-  device: "hx_stomp",
+  stored: { api_base_url: "", model: "", target_app: "", has_api_key: false },
   effective_base_url: "https://example.test/v1/",
   effective_model: "gemini-3.8-flash",
   effective_target_app: "HX Edit",

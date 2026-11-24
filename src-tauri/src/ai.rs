@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 
 use crate::catalog;
 use crate::config::ResolvedSettings;
-use crate::device::Device;
 
 /// 1 回の応答で受け付ける値の変更の上限。これを超える応答は丸ごと捨てる。
 pub const MAX_SET_VALUE_ACTIONS: usize = 12;
@@ -55,11 +54,6 @@ pub struct AiAction {
     pub value: String,
     #[serde(default)]
     pub previous_value: String,
-    /// スライダーの最小値と最大値 (GP-5 の set_value だけ)。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -145,7 +139,6 @@ pub struct DoneAction {
 }
 
 pub struct RequestInput<'a> {
-    pub device: Device,
     pub purpose: Purpose<'a>,
     pub history: &'a [ChatTurn],
     /// リファレンスから切り出した区間 (WAV)。
@@ -163,7 +156,7 @@ pub struct RequestInput<'a> {
     pub changed_parameters: &'a [RestoreTarget],
 }
 
-const HX_INTRO: &str = r#"あなたは Line 6 HX Stomp を HX Edit (macOS) で操作するギター音作りのアシスタントである。
+pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp を HX Edit (macOS) で操作するギター音作りのアシスタントである。
 渡されるもの:
 - HX Edit のウィンドウ全体のスクリーンショット (タイトルバーを含む)
 - HX Stomp から録音した現在のギターの音 (渡された場合)
@@ -178,31 +171,7 @@ const HX_INTRO: &str = r#"あなたは Line 6 HX Stomp を HX Edit (macOS) で�
 操作の種類:
 - "set_value": いま画面に表示されているパラメータの値を変える。x, y はそのパラメータの数値表示 (ノブの下などにある値の文字) の中心を指す。アプリはそこをダブルクリックして value を打ち込み Enter で確定する。
 - "select_block": シグナルチェーン上のブロックをクリックして選ぶ。x, y はそのブロックのアイコンの中心を指す。パラメータは value / previous_value を空文字にする。
-"#;
 
-const GP5_INTRO: &str = r#"あなたは Valeton GP-5 を Valeton Suite (macOS で動かしている iPad 版のエディタ) で操作するギター音作りのアシスタントである。
-渡されるもの:
-- Valeton Suite のウィンドウ全体のスクリーンショット (タイトルバーを含む)
-- GP-5 から録音した現在のギターの音 (渡された場合)
-- 目標にしたいリファレンス音源 (渡された場合)
-- ユーザーの指示
-
-画面の見方:
-- 左にモジュール (NR, PRE, DST, N→S, AMP, CAB, EQ, MOD, DLY, RVB) のアイコンが並ぶ。色が付いているものが On、灰色のものが Off で、枠で囲まれたものが選ばれている。この説明ではモジュールをブロックと呼ぶ。
-- 右に、選ばれたモジュールのモデル名と、パラメータの横長のスライダーが縦に並ぶ。スライダーは左端が最小、右端が最大で、青く塗られた幅が今の値を表す。左端にパラメータ名、右端に値の数字が出る。
-
-やること:
-1. 音を聴き比べ、スクリーンショットからモジュールの構成と、いま選ばれているモジュールのパラメータの値を読み取る。
-2. 指示 (とリファレンス) に近づけるためのパラメータ変更を決める。
-3. 変更をアプリが自動で実行できる操作として返す。
-
-操作の種類:
-- "set_value": いま右に出ているパラメータのスライダーの値を変える。x, y はそのスライダーのバーの上 (縦はバーの中央) を指す。min と max にはそのパラメータの最小値と最大値を書く (多くは 0 と 100。青い塗りの幅と今の値の比から確かめる)。アプリは塗りの端をドラッグして value に合わせる。塗りの幅が previous_value と min / max から計算した位置と合わなければ、アプリは何もせずに止まる。
-- "select_block": モジュールのアイコンをクリックして選ぶ。x, y はアイコンの中心を指す。value / previous_value は空文字にし、min / max は 0 にする。
-- On/Off のスイッチや、モデル名の右の「>」から選ぶモデルの切り替えは操作しない。
-"#;
-
-const COMMON_RULES: &str = r#"
 座標の決まり:
 - x, y はスクリーンショットの左上を (0, 0)、右下を (1000, 1000) とする正規化座標で返す。x が横、y が縦である。
 - タイトルバー (最上部) やウィンドウの外を指してはいけない。
@@ -220,7 +189,7 @@ const COMMON_RULES: &str = r#"
 - 選び直した後は撮り直したスクリーンショットだけを渡し、音声は渡さない。select_block を返すときは、選んだ後に変える予定のパラメータと変える向きを explanation に書いておくこと。
 
 関数 (ツール):
-- search_effects: この機種のエフェクト一覧を category と query で検索する。別のモデルを勧めるとき、画面のモデルが何を元にしたものか確かめるときに使う。1 回の問い合わせで 3 回まで。
+- search_effects: HX Stomp のエフェクト一覧を category と query で検索する。別のモデルを勧めるとき、画面のモデルが何を元にしたものか確かめるときに使う。1 回の問い合わせで 3 回まで。
 - submit_actions: 答えを返す。最後に必ず 1 回呼ぶ。
 - モデルの切り替え (別のアンプやペダルに変えること) はアプリでは実行しない。勧めるときは search_effects で確かめた正確なモデル名を explanation に書き、手で切り替えるよう伝える。
 
@@ -230,39 +199,27 @@ const COMMON_RULES: &str = r#"
 
 explanation は日本語で、何をなぜ変えるのか、録音とリファレンスの違いをどう聴いたのかを簡潔に書く。"#;
 
-/// 機種ごとのシステムプロンプト。
-pub fn system_prompt(device: Device) -> String {
-    let intro = match device {
-        Device::HxStomp => HX_INTRO,
-        Device::Gp5 => GP5_INTRO,
-    };
-    format!("{intro}{COMMON_RULES}")
-}
-
 /// 応答の JSON スキーマ。Gemini の OpenAI 互換エンドポイントで通る範囲に留める。
-/// GP-5 はスライダーなので、値の範囲 (min / max) も返させる。
-pub fn response_schema(device: Device) -> Value {
-    let mut props = json!({
-        "type": { "type": "string", "enum": ["set_value", "select_block"] },
-        "block": { "type": "string" },
-        "parameter": { "type": "string" },
-        "x": { "type": "number" },
-        "y": { "type": "number" },
-        "value": { "type": "string" },
-        "previous_value": { "type": "string" }
-    });
-    if device == Device::Gp5 {
-        props["min"] = json!({ "type": "number" });
-        props["max"] = json!({ "type": "number" });
-    }
-    let required: Vec<&String> = props.as_object().unwrap().keys().collect();
+pub fn response_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
             "explanation": { "type": "string" },
             "actions": {
                 "type": "array",
-                "items": { "type": "object", "properties": props, "required": required }
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": { "type": "string", "enum": ["set_value", "select_block"] },
+                        "block": { "type": "string" },
+                        "parameter": { "type": "string" },
+                        "x": { "type": "number" },
+                        "y": { "type": "number" },
+                        "value": { "type": "string" },
+                        "previous_value": { "type": "string" }
+                    },
+                    "required": ["type", "block", "parameter", "x", "y", "value", "previous_value"]
+                }
             },
             "needs_another_round": { "type": "boolean" },
             "goal_reached": { "type": "boolean" }
@@ -368,7 +325,7 @@ fn purpose_text(input: &RequestInput) -> String {
 
 /// Chat Completions のリクエスト本文を組み立てる。
 pub fn build_request(model: &str, input: &RequestInput) -> Value {
-    let mut messages = vec![json!({ "role": "system", "content": system_prompt(input.device) })];
+    let mut messages = vec![json!({ "role": "system", "content": SYSTEM_PROMPT })];
 
     let start = input.history.len().saturating_sub(MAX_HISTORY_TURNS);
     for turn in &input.history[start..] {
@@ -402,20 +359,20 @@ pub fn build_request(model: &str, input: &RequestInput) -> Value {
     json!({
         "model": model,
         "messages": messages,
-        "tools": tools(input.device),
+        "tools": tools(),
         // 答えも関数で返させる (本文の JSON より形が崩れにくく、検索と同じ流れで扱える)
         "tool_choice": "required"
     })
 }
 
 /// AI に渡す関数: エフェクト一覧の検索と、答えの提出。
-pub fn tools(device: Device) -> Value {
+pub fn tools() -> Value {
     json!([
         {
             "type": "function",
             "function": {
                 "name": SEARCH_TOOL,
-                "description": "この機種のエフェクト一覧を検索する。モデルを勧めるときや、画面のモデルが何を元にしたものか確かめるときに使う。category と query の少なくとも一方を指定する。結果は最大 15 件で、total が全件数である。",
+                "description": "HX Stomp のエフェクト一覧を検索する。モデルを勧めるときや、画面のモデルが何を元にしたものか確かめるときに使う。category と query の少なくとも一方を指定する。結果は最大 15 件で、total が全件数である。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -433,7 +390,7 @@ pub fn tools(device: Device) -> Value {
             "function": {
                 "name": SUBMIT_TOOL,
                 "description": "答え (説明と、アプリが実行する操作) を返す。最後に必ず 1 回呼ぶ。",
-                "parameters": response_schema(device)
+                "parameters": response_schema()
             }
         }
     ])
@@ -526,8 +483,8 @@ pub fn parse_reply(body: &Value) -> Result<Reply, String> {
 }
 
 /// 検索を実行し、AI に返す文字列にする。失敗も AI に伝えて、条件を直させる。
-pub fn run_search(device: Device, call: &SearchCall) -> String {
-    match catalog::search(device, call.category.as_deref(), call.query.as_deref()) {
+pub fn run_search(call: &SearchCall) -> String {
+    match catalog::search(call.category.as_deref(), call.query.as_deref()) {
         Ok(r) => serde_json::to_string(&r).unwrap_or_default(),
         Err(e) => json!({ "error": e }).to_string(),
     }
@@ -577,27 +534,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// GP-5 のスライダーの範囲 (min / max) があり、値がその中にあるかを確かめる。
-fn check_slider_range(a: &AiAction) -> Result<(), String> {
-    let (Some(min), Some(max)) = (a.min, a.max) else {
-        return Err("スライダーの範囲 (min / max) がありません".to_string());
-    };
-    if !(min.is_finite() && max.is_finite() && min < max) {
-        return Err(format!("スライダーの範囲が正しくありません ({min}〜{max})"));
-    }
-    let value: f64 = a
-        .value
-        .trim()
-        .parse()
-        .map_err(|_| "値が数値ではありません")?;
-    if !(min..=max).contains(&value) {
-        return Err(format!(
-            "値 {value} がスライダーの範囲 ({min}〜{max}) の外です"
-        ));
-    }
-    Ok(())
-}
-
 /// 数値として打ち込んでよい文字列かを確かめる (単位や記号は受け付けない)。
 pub fn is_numeric_value(s: &str) -> bool {
     let t = s.trim();
@@ -609,12 +545,7 @@ pub fn is_numeric_value(s: &str) -> bool {
 }
 
 /// AI の応答を実行してよいか、実行前にまとめて確かめる。1 つでも不正なら何も実行しない。
-pub fn validate(
-    resp: &AiResponse,
-    purpose: &Purpose,
-    last_round: bool,
-    device: Device,
-) -> Result<(), String> {
+pub fn validate(resp: &AiResponse, purpose: &Purpose, last_round: bool) -> Result<(), String> {
     let set_values: Vec<_> = resp
         .actions
         .iter()
@@ -638,9 +569,6 @@ pub fn validate(
             ActionKind::SetValue => {
                 if !is_numeric_value(&a.value) {
                     return Err(format!("{label} の値が数値ではありません: {:?}", a.value));
-                }
-                if device == Device::Gp5 {
-                    check_slider_range(a).map_err(|e| format!("{label}: {e}"))?;
                 }
             }
             ActionKind::SelectBlock => {
@@ -743,7 +671,7 @@ pub(crate) async fn call_with_delays(
             messages.push(json!({
                 "role": "tool",
                 "tool_call_id": c.id,
-                "content": run_search(settings.device, c)
+                "content": run_search(c)
             }));
         }
         if searches >= MAX_SEARCHES {
@@ -813,14 +741,6 @@ async fn post(
 mod tests {
     use super::*;
 
-    /// 両機種のシステムプロンプト。共通の決まりはどちらにも書かれていること。
-    fn prompts() -> Vec<String> {
-        [Device::HxStomp, Device::Gp5]
-            .into_iter()
-            .map(system_prompt)
-            .collect()
-    }
-
     fn action(kind: ActionKind, value: &str) -> AiAction {
         AiAction {
             kind,
@@ -830,8 +750,6 @@ mod tests {
             y: 800.0,
             value: value.into(),
             previous_value: "5.0".into(),
-            min: None,
-            max: None,
         }
     }
 
@@ -868,35 +786,21 @@ mod tests {
 
     #[test]
     fn response_schema_matches_rust_types() {
-        // AI に渡すスキーマと、応答を読む Rust の型がずれていないかを確かめる。
-        // GP-5 だけはスライダーの範囲 (min / max) を返させる
-        for (device, range) in [(Device::HxStomp, None), (Device::Gp5, Some((0.0, 100.0)))] {
-            let schema = response_schema(device);
-            let mut a = action(ActionKind::SetValue, "1");
-            (a.min, a.max) = (range.map(|r| r.0), range.map(|r| r.1));
-            let sample = AiResponse {
-                explanation: String::new(),
-                actions: vec![a],
-                needs_another_round: false,
-                goal_reached: false,
-            };
-            let json = serde_json::to_value(&sample).unwrap();
-            assert_eq!(keys(&schema["properties"]), keys(&json));
-            assert_eq!(strings(&schema["required"]), keys(&json));
+        // AI に渡すスキーマと、応答を読む Rust の型がずれていないかを確かめる
+        let schema = response_schema();
+        let sample = AiResponse {
+            explanation: String::new(),
+            actions: vec![action(ActionKind::SetValue, "1")],
+            needs_another_round: false,
+            goal_reached: false,
+        };
+        let json = serde_json::to_value(&sample).unwrap();
+        assert_eq!(keys(&schema["properties"]), keys(&json));
+        assert_eq!(strings(&schema["required"]), keys(&json));
 
-            let item = &schema["properties"]["actions"]["items"];
-            assert_eq!(
-                keys(&item["properties"]),
-                keys(&json["actions"][0]),
-                "{device:?}"
-            );
-            assert_eq!(
-                strings(&item["required"]),
-                keys(&json["actions"][0]),
-                "{device:?}"
-            );
-        }
-        let item = &response_schema(Device::HxStomp)["properties"]["actions"]["items"];
+        let item = &schema["properties"]["actions"]["items"];
+        assert_eq!(keys(&item["properties"]), keys(&json["actions"][0]));
+        assert_eq!(strings(&item["required"]), keys(&json["actions"][0]));
 
         let kinds: Vec<String> = [ActionKind::SetValue, ActionKind::SelectBlock]
             .iter()
@@ -924,10 +828,7 @@ mod tests {
             json!(catalog::CATEGORIES)
         );
         assert_eq!(tools[1]["function"]["name"], "submit_actions");
-        assert_eq!(
-            tools[1]["function"]["parameters"],
-            response_schema(Device::HxStomp)
-        );
+        assert_eq!(tools[1]["function"]["parameters"], response_schema());
         assert!(body.get("response_format").is_none());
     }
 
@@ -1028,43 +929,29 @@ mod tests {
 
     #[test]
     fn search_results_and_errors_are_passed_back_as_json() {
-        let ok = run_search(
-            crate::device::Device::Gp5,
-            &SearchCall {
-                id: "a".into(),
-                category: Some("drive".into()),
-                query: Some("TS".into()),
-            },
-        );
+        let ok = run_search(&SearchCall {
+            id: "a".into(),
+            category: Some("drive".into()),
+            query: Some("TS".into()),
+        });
         let v: Value = serde_json::from_str(&ok).unwrap();
-        assert_eq!(v["total"], 1);
-        assert_eq!(v["models"][0]["name"], "Green OD");
-        let err = run_search(
-            crate::device::Device::Gp5,
-            &SearchCall {
-                id: "a".into(),
-                category: Some("fuzzbox".into()),
-                query: None,
-            },
-        );
+        assert_eq!(v["total"], 2);
+        assert_eq!(v["models"][0]["name"], "Scream 808");
+        let err = run_search(&SearchCall {
+            id: "a".into(),
+            category: Some("fuzzbox".into()),
+            query: None,
+        });
         assert!(err.contains("不明なカテゴリ"), "{err}");
     }
 
     #[test]
     fn system_prompt_states_the_rules_the_validator_enforces() {
         // 検証で弾く規則を AI に伝えていないと、毎回弾かれてしまう
-        assert!(prompts().iter().all(|p| p.contains("(1000, 1000)")));
-        assert!(
-            prompts()
-                .iter()
-                .all(|p| p.contains(&format!("最大 {MAX_SET_VALUE_ACTIONS} 個")))
-        );
-        assert!(
-            prompts()
-                .iter()
-                .all(|p| p.contains("select_block を 1 つだけ"))
-        );
-        assert!(prompts().iter().all(|p| p.contains("単位を付けない数値")));
+        assert!(SYSTEM_PROMPT.contains("(1000, 1000)"));
+        assert!(SYSTEM_PROMPT.contains(&format!("最大 {MAX_SET_VALUE_ACTIONS} 個")));
+        assert!(SYSTEM_PROMPT.contains("select_block を 1 つだけ"));
+        assert!(SYSTEM_PROMPT.contains("単位を付けない数値"));
     }
 
     #[test]
@@ -1146,20 +1033,20 @@ mod tests {
     #[test]
     fn validate_accepts_normal_response() {
         let r = resp(vec![action(ActionKind::SetValue, "4.5")]);
-        assert!(validate(&r, &ADJUST, false, Device::HxStomp).is_ok());
+        assert!(validate(&r, &ADJUST, false).is_ok());
     }
 
     #[test]
     fn validate_rejects_non_numeric_value() {
         let r = resp(vec![action(ActionKind::SetValue, "4.5dB")]);
-        assert!(validate(&r, &ADJUST, false, Device::HxStomp).is_err());
+        assert!(validate(&r, &ADJUST, false).is_err());
     }
 
     #[test]
     fn validate_rejects_out_of_range_coordinates() {
         let mut a = action(ActionKind::SetValue, "4.5");
         a.x = 1200.0;
-        assert!(validate(&resp(vec![a]), &ADJUST, false, Device::HxStomp).is_err());
+        assert!(validate(&resp(vec![a]), &ADJUST, false).is_err());
     }
 
     #[test]
@@ -1168,7 +1055,7 @@ mod tests {
             action(ActionKind::SetValue, "1");
             MAX_SET_VALUE_ACTIONS
         ]);
-        assert!(validate(&r, &ADJUST, false, Device::HxStomp).is_ok());
+        assert!(validate(&r, &ADJUST, false).is_ok());
     }
 
     #[test]
@@ -1177,7 +1064,7 @@ mod tests {
             action(ActionKind::SetValue, "1");
             MAX_SET_VALUE_ACTIONS + 1
         ]);
-        assert!(validate(&r, &ADJUST, false, Device::HxStomp).is_err());
+        assert!(validate(&r, &ADJUST, false).is_err());
     }
 
     #[test]
@@ -1186,72 +1073,13 @@ mod tests {
             action(ActionKind::SetValue, "1"),
             action(ActionKind::SelectBlock, ""),
         ]);
-        assert!(validate(&ok, &ADJUST, false, Device::HxStomp).is_ok());
-        assert!(validate(&ok, &ADJUST, true, Device::HxStomp).is_err());
+        assert!(validate(&ok, &ADJUST, false).is_ok());
+        assert!(validate(&ok, &ADJUST, true).is_err());
         let ng = resp(vec![
             action(ActionKind::SelectBlock, ""),
             action(ActionKind::SetValue, "1"),
         ]);
-        assert!(validate(&ng, &ADJUST, false, Device::HxStomp).is_err());
-    }
-
-    fn slider(value: &str, min: Option<f64>, max: Option<f64>) -> AiResponse {
-        let mut a = action(ActionKind::SetValue, value);
-        (a.min, a.max) = (min, max);
-        resp(vec![a])
-    }
-
-    #[test]
-    fn gp5_set_value_needs_a_valid_range_containing_the_value() {
-        let ok = slider("45", Some(0.0), Some(100.0));
-        assert!(validate(&ok, &ADJUST, false, Device::Gp5).is_ok());
-        assert!(
-            validate(
-                &slider("0", Some(0.0), Some(100.0)),
-                &ADJUST,
-                false,
-                Device::Gp5
-            )
-            .is_ok()
-        );
-        assert!(
-            validate(
-                &slider("100", Some(0.0), Some(100.0)),
-                &ADJUST,
-                false,
-                Device::Gp5
-            )
-            .is_ok()
-        );
-        for (bad, why) in [
-            (slider("45", None, Some(100.0)), "範囲"),
-            (slider("45", Some(0.0), None), "範囲"),
-            (slider("45", Some(100.0), Some(0.0)), "正しくありません"),
-            (slider("45", Some(50.0), Some(50.0)), "正しくありません"),
-            (slider("101", Some(0.0), Some(100.0)), "範囲 (0〜100) の外"),
-            (slider("-1", Some(0.0), Some(100.0)), "範囲 (0〜100) の外"),
-            (slider("1", Some(f64::NAN), Some(100.0)), "正しくありません"),
-        ] {
-            let e = validate(&bad, &ADJUST, false, Device::Gp5).unwrap_err();
-            assert!(e.contains(why), "{e}");
-        }
-        // HX では範囲を見ない
-        assert!(validate(&slider("45", None, None), &ADJUST, false, Device::HxStomp).is_ok());
-    }
-
-    #[test]
-    fn gp5_request_uses_its_own_prompt_and_schema() {
-        let mut i = input(ADJUST, &[]);
-        i.device = Device::Gp5;
-        let body = build_request("m", &i);
-        let prompt = body["messages"][0]["content"].as_str().unwrap();
-        assert!(prompt.contains("Valeton Suite"));
-        assert!(prompt.contains("min と max"));
-        let props = &body["tools"][1]["function"]["parameters"]["properties"]["actions"]["items"]["properties"];
-        assert!(props.get("min").is_some() && props.get("max").is_some());
-        let hx = build_request("m", &input(ADJUST, &[]));
-        let hx_prompt = hx["messages"][0]["content"].as_str().unwrap();
-        assert!(hx_prompt.contains("ダブルクリック") && !hx_prompt.contains("Valeton"));
+        assert!(validate(&ng, &ADJUST, false).is_err());
     }
 
     #[test]
@@ -1266,8 +1094,7 @@ mod tests {
             validate(
                 &resp(vec![action(ActionKind::SetValue, "5.0")]),
                 &purpose,
-                false,
-                Device::HxStomp
+                false
             )
             .is_ok()
         );
@@ -1275,8 +1102,7 @@ mod tests {
             validate(
                 &resp(vec![action(ActionKind::SetValue, "7.0")]),
                 &purpose,
-                false,
-                Device::HxStomp
+                false
             )
             .is_err()
         );
@@ -1284,7 +1110,6 @@ mod tests {
 
     fn input<'a>(purpose: Purpose<'a>, history: &'a [ChatTurn]) -> RequestInput<'a> {
         RequestInput {
-            device: Device::HxStomp,
             purpose,
             history,
             reference_audio: Some(b"REF"),
@@ -1467,32 +1292,20 @@ mod tests {
 
     #[test]
     fn system_prompt_explains_the_tools_and_their_limit() {
-        assert!(prompts().iter().all(|p| p.contains(SEARCH_TOOL)));
-        assert!(prompts().iter().all(|p| p.contains(SUBMIT_TOOL)));
-        assert!(
-            prompts()
-                .iter()
-                .all(|p| p.contains(&format!("{MAX_SEARCHES} 回まで")))
-        );
-        assert!(prompts().iter().all(|p| p.contains("モデルの切り替え")));
+        assert!(SYSTEM_PROMPT.contains(SEARCH_TOOL));
+        assert!(SYSTEM_PROMPT.contains(SUBMIT_TOOL));
+        assert!(SYSTEM_PROMPT.contains(&format!("{MAX_SEARCHES} 回まで")));
+        assert!(SYSTEM_PROMPT.contains("モデルの切り替え"));
     }
 
     #[test]
     fn system_prompt_explains_goal_reached() {
-        assert!(
-            prompts()
-                .iter()
-                .all(|p| p.contains("goal_reached を true にし、actions を空にする"))
-        );
+        assert!(SYSTEM_PROMPT.contains("goal_reached を true にし、actions を空にする"));
     }
 
     #[test]
     fn system_prompt_says_audio_is_not_resent_after_selecting_a_block() {
-        assert!(prompts().iter().all(|p| p.contains("音声は渡さない")));
-        assert!(
-            prompts()
-                .iter()
-                .all(|p| p.contains("変える予定のパラメータ"))
-        );
+        assert!(SYSTEM_PROMPT.contains("音声は渡さない"));
+        assert!(SYSTEM_PROMPT.contains("変える予定のパラメータ"));
     }
 }

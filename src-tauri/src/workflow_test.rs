@@ -14,7 +14,6 @@ use crate::automation::fake::{Ev, FakeDesktop, HX_PID, HX_WINDOW, hx_rect};
 use crate::automation::{self, Outcome};
 use crate::capture::{Screenshot, TargetWindow};
 use crate::config::StoredSettings;
-use crate::device::Device;
 use crate::sound::Prepared;
 use crate::workflow::{
     self, AdjustInput, AppState, Engine, LoopIteration, MAX_CONSECUTIVE_FAILURES, MAX_ROUNDS,
@@ -36,7 +35,6 @@ struct FakeEngine {
     on_ask: Option<Box<dyn FnMut(usize)>>,
     iterations: Vec<LoopIteration>,
     settles: usize,
-    device: Device,
 }
 
 fn recording() -> Prepared {
@@ -64,7 +62,6 @@ impl FakeEngine {
             on_ask: None,
             iterations: vec![],
             settles: 0,
-            device: Device::HxStomp,
         }
     }
 
@@ -82,10 +79,6 @@ impl FakeEngine {
 }
 
 impl Engine for FakeEngine {
-    fn device(&self) -> Device {
-        self.device
-    }
-
     fn progress(&self, _stage: &str, _message: String) {}
 
     async fn capture(&mut self) -> Result<Screenshot, String> {
@@ -120,12 +113,7 @@ impl Engine for FakeEngine {
         actions: Vec<AiAction>,
         window: TargetWindow,
     ) -> Result<Outcome, String> {
-        Ok(automation::execute(
-            &mut self.desktop,
-            self.device,
-            &actions,
-            &window,
-        ))
+        Ok(automation::execute(&mut self.desktop, &actions, &window))
     }
 
     async fn record(&mut self) -> Result<Prepared, String> {
@@ -163,8 +151,6 @@ fn set(param: &str, x: f64, prev: &str, value: &str) -> AiAction {
         y: 800.0,
         value: value.into(),
         previous_value: prev.into(),
-        min: None,
-        max: None,
     }
 }
 
@@ -177,8 +163,6 @@ fn select(block: &str) -> AiAction {
         y: 190.0,
         value: String::new(),
         previous_value: String::new(),
-        min: None,
-        max: None,
     }
 }
 
@@ -853,49 +837,4 @@ async fn loop_rejects_invalid_iteration_counts() {
             .is_err()
     );
     assert_eq!(e.records, 0);
-}
-
-// ---- GP-5 (Valeton Suite) ----
-
-#[tokio::test]
-async fn gp5_answer_is_validated_and_executed_by_dragging_the_slider() {
-    use crate::automation::fake::{DragModel, FakeSlider};
-    let s = state();
-    let mut desktop = FakeDesktop::new();
-    desktop.world.sliders = vec![FakeSlider {
-        rect: crate::geometry::Rect {
-            x: 500.0,
-            y: 140.0,
-            width: 450.0,
-            height: 30.0,
-        },
-        fraction: 0.6,
-    }];
-    desktop.world.drag_model = DragModel::Absolute;
-    let mut gain = set("Gain", 800.0, "60", "40");
-    gain.y = 155.0;
-    (gain.min, gain.max) = (Some(0.0), Some(100.0));
-    let mut e = FakeEngine::with_desktop(desktop, vec![answer(vec![gain])]);
-    e.device = Device::Gp5;
-    let r = adjust(&mut e, &s).await;
-
-    assert_eq!(r.error, None);
-    assert!((e.desktop.world.sliders[0].fraction - 0.4).abs() < 0.01);
-    assert_eq!(undo_stack(&s), vec![vec![target("Gain", "60")]]);
-    // GP-5 用のプロンプトで聞いている
-    let prompt = e.requests[0]["messages"][0]["content"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(prompt.contains("Valeton Suite"), "{prompt}");
-}
-
-#[tokio::test]
-async fn gp5_answer_without_a_range_is_rejected_before_operating() {
-    let s = state();
-    let mut e = FakeEngine::new(vec![answer(vec![set("Gain", 800.0, "60", "40")])]);
-    e.device = Device::Gp5;
-    let r = adjust(&mut e, &s).await;
-    assert!(r.error.unwrap().contains("min / max"));
-    assert!(e.desktop.events.is_empty());
 }

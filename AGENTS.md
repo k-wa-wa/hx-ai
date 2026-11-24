@@ -15,7 +15,6 @@
 | 守りたいもの | 置き場所 |
 | --- | --- |
 | 自動操作のガードレール (最前面・ウィンドウの移動・重なり・マウスの介入) | `src-tauri/src/automation.rs` の `FakeDesktop` を使うテスト。ガード 1 つにつきテスト 1 つ |
-| GP-5 のスライダー操作 (塗りの読み取り・ドラッグ・直し・変更前の値との照合) | `src-tauri/src/automation.rs` の `gp5_tests` (`FakeDesktop` がスライダーを模擬し、`DragModel` で反応を変える) と `src-tauri/src/slider.rs` のテスト (合成した画像と模擬画面 `mock_valeton.png`) |
 | エフェクト一覧の中身と検索 | `src-tauri/src/catalog.rs` のテスト。件数を固定してあるので、一覧を作り直したら件数も直す |
 | ツール呼び出し (検索 → 結果 → 答え、検索の上限) | `src-tauri/src/ai.rs` のテスト (返事の解釈) と `src-tauri/src/ai_http_test.rs` (往復) |
 | サイクルと Undo の流れ (撮り直し・回数の上限・途中失敗・戻せなかった値) | `src-tauri/src/workflow_test.rs` の `FakeEngine` |
@@ -28,8 +27,6 @@
 | フロントエンドと Rust のコマンド名・引数名 | `src/contract.test.ts` (ソースを読んで突き合わせる) |
 
 OS に触る処理 (`macos.rs`・`capture.rs`・`audio.rs` など) は薄く保ち、判断は純粋関数に切り出してテストする。
-
-機種によって変わるもの (プロンプト・応答のスキーマ・値の変え方) を足すときは、両方の機種でテストする。
 
 ## 変異テスト
 

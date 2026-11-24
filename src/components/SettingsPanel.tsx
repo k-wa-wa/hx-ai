@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, Device, DEVICES, errorText, SettingsView } from "../api";
+import { api, errorText, SettingsView } from "../api";
 
 export function SettingsPanel({
   view,
@@ -10,7 +10,6 @@ export function SettingsPanel({
   onSaved: (v: SettingsView) => void;
   onError: (msg: string) => void;
 }) {
-  const [device, setDevice] = useState<Device>("hx_stomp");
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
   const [targetApp, setTargetApp] = useState("");
@@ -21,7 +20,6 @@ export function SettingsPanel({
 
   useEffect(() => {
     if (!view) return;
-    setDevice(view.device);
     setBaseUrl(view.stored.api_base_url);
     setModel(view.stored.model);
     setTargetApp(view.stored.target_app);
@@ -31,7 +29,6 @@ export function SettingsPanel({
     setSaving(true);
     try {
       const next = await api.saveSettings({
-        device,
         apiBaseUrl: baseUrl,
         apiKey: clearKey ? "" : apiKey.trim() ? apiKey : null,
         model,
@@ -50,16 +47,6 @@ export function SettingsPanel({
 
   return (
     <section className="panel">
-      <label className="field">
-        <span>機種</span>
-        <select value={device} onChange={(e) => setDevice(e.target.value as Device)}>
-          {DEVICES.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.label}
-            </option>
-          ))}
-        </select>
-      </label>
       <div className="panel-title">AI</div>
       <label className="field">
         <span>base URL</span>

@@ -17,22 +17,13 @@ export interface InputDevice {
   is_default: boolean;
 }
 
-export type Device = "hx_stomp" | "gp5";
-
-export const DEVICES: { id: Device; label: string }[] = [
-  { id: "hx_stomp", label: "Line 6 HX Stomp" },
-  { id: "gp5", label: "Valeton GP-5" },
-];
-
 export interface SettingsView {
   stored: {
-    device: string;
     api_base_url: string;
     model: string;
     target_app: string;
     has_api_key: boolean;
   };
-  device: Device;
   effective_base_url: string;
   effective_model: string;
   effective_target_app: string;
@@ -40,7 +31,6 @@ export interface SettingsView {
 }
 
 export interface SettingsInput {
-  device: Device;
   apiBaseUrl: string;
   /** null なら保存済みのキーを変えない。空文字なら消す。 */
   apiKey: string | null;

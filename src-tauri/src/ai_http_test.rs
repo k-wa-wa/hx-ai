@@ -14,7 +14,6 @@ const NO_WAIT: [Duration; 2] = [Duration::ZERO, Duration::ZERO];
 
 fn settings(base: &str) -> ResolvedSettings {
     ResolvedSettings {
-        device: crate::device::Device::HxStomp,
         api_base_url: base.to_string(),
         api_key: "test-key".into(),
         model: "test-model".into(),
