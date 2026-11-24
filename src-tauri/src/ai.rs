@@ -82,6 +82,7 @@ pub struct AiResponse {
 pub enum AudioFormat {
     Wav,
     Mp3,
+    M4a,
 }
 
 impl AudioFormat {
@@ -91,9 +92,11 @@ impl AudioFormat {
             Ok(Self::Wav)
         } else if lower.ends_with(".mp3") {
             Ok(Self::Mp3)
+        } else if lower.ends_with(".m4a") {
+            Ok(Self::M4a)
         } else {
             Err(format!(
-                "対応していない音源形式です (WAV か MP3 のみ): {path}"
+                "対応していない音源形式です (WAV / MP3 / M4A のみ): {path}"
             ))
         }
     }
@@ -102,6 +105,7 @@ impl AudioFormat {
         match self {
             Self::Wav => "wav",
             Self::Mp3 => "mp3",
+            Self::M4a => "m4a",
         }
     }
 
@@ -109,6 +113,7 @@ impl AudioFormat {
         match self {
             Self::Wav => "audio/wav",
             Self::Mp3 => "audio/mpeg",
+            Self::M4a => "audio/mp4",
         }
     }
 }
@@ -995,6 +1000,7 @@ mod tests {
     fn mime_types() {
         assert_eq!(AudioFormat::Wav.mime(), "audio/wav");
         assert_eq!(AudioFormat::Mp3.mime(), "audio/mpeg");
+        assert_eq!(AudioFormat::M4a.mime(), "audio/mp4");
     }
 
     #[test]
@@ -1045,7 +1051,8 @@ mod tests {
             AudioFormat::Wav
         );
         assert_eq!(AudioFormat::from_path("x.mp3").unwrap(), AudioFormat::Mp3);
-        assert!(AudioFormat::from_path("x.m4a").is_err());
+        assert_eq!(AudioFormat::from_path("x.M4A").unwrap(), AudioFormat::M4a);
+        assert!(AudioFormat::from_path("x.ogg").is_err());
     }
 
     #[test]

@@ -234,7 +234,7 @@ impl ReferenceTrack {
         })
     }
 
-    /// WAV / MP3 のバイト列を読む。`extension` は形式を見分ける手がかり ("wav" / "mp3")。
+    /// WAV / MP3 / M4A のバイト列を読む。`extension` は形式を見分ける手がかり ("wav" / "mp3" / "m4a")。
     pub fn decode(bytes: &[u8], extension: &str) -> Result<Self, String> {
         Self::new(&decode(bytes, extension)?)
     }

@@ -103,7 +103,7 @@ export function ReferenceDrop({
   }
   return (
     <div className={`drop ${hover ? "hover" : ""}`}>
-      {loading ? "読み込み中…" : "リファレンス (WAV / MP3) をドロップ"}
+      {loading ? "読み込み中…" : "リファレンス (WAV / MP3 / M4A) をドロップ"}
     </div>
   );
 }

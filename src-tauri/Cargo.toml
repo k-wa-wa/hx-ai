@@ -33,7 +33,7 @@ block2 = "0.6.2"
 cpal = "0.18"
 hound = "3.5.1"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "native-tls", "http2"] }
-symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm"] }
+symphonia = { version = "0.6.1", default-features = false, features = ["mp3", "wav", "pcm", "aac", "isomp4", "alac"] }
 hx-proto = { git = "https://github.com/crmne/tonepush", rev = "88b6c0cc58b8d9296d8160986ce0d44bcceeaeaf" }
 hx-usb = { git = "https://github.com/crmne/tonepush", rev = "88b6c0cc58b8d9296d8160986ce0d44bcceeaeaf" }
 hx-catalog = { git = "https://github.com/crmne/tonepush", rev = "88b6c0cc58b8d9296d8160986ce0d44bcceeaeaf" }

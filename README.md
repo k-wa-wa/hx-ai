@@ -15,7 +15,7 @@ Tauri v2 (Rust) + React + TypeScript で作り、AI は OpenAI 互換の Chat Co
 5. 手動モードか自動ループを選ぶ (下)。
 6. 結果が気に入らなければ「戻す」を押す。1 回の送信 (自動ループでは 1 回の調整) ごとに、変更前の値へ直接戻せる。
 
-目標の音 (WAV / MP3) をドロップすると、リファレンスとして AI に渡す。AI に送るのは 20 秒の区間だけで、プレビューを再生して「再生位置から使う」を押すと区間を選び直せる。
+目標の音 (WAV / MP3 / M4A) をドロップすると、リファレンスとして AI に渡す。AI に送るのは 20 秒の区間だけで、プレビューを再生して「再生位置から使う」を押すと区間を選び直せる。
 
 ### 手動モード
 
@@ -147,7 +147,7 @@ cd src-tauri && HX_USB_LIVE=1 cargo test --lib hx_usb_idle_keepalive_round_trip 
 | `src-tauri/src/hx_device.rs` | USB 通信 (`hx-usb`・`hx-proto`・`hx-catalog`) のラップ、チェーン文字列化、変更の検証と実行、Undo 復元 |
 | `src-tauri/src/catalog.rs` | エフェクト一覧 (`catalog/hx_stomp.json`) の検索 |
 | `src-tauri/src/audio.rs` | cpal による録音 (開始/停止できる録音器と、秒数を決めた録音) |
-| `src-tauri/src/sound.rs` | 録音とリファレンスを AI に送る形に整える (モノラル化・無音の削除・リサンプル・MP3 のデコード) |
+| `src-tauri/src/sound.rs` | 録音とリファレンスを AI に送る形に整える (モノラル化・無音の削除・リサンプル・デコード) |
 | `src-tauri/src/macos.rs` | マイク権限の確認・要求 |
 | `src-tauri/src/permission.rs` | 足りない権限と「許可する」で何をするかの判断 (純粋関数) |
 | `src-tauri/src/config.rs` | 設定の保存と解決 |
