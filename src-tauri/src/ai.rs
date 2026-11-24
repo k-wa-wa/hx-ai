@@ -54,6 +54,10 @@ pub struct AiAction {
     pub value: String,
     #[serde(default)]
     pub previous_value: String,
+    /// set_value で変える行の番号 (右端に上下の矢印がある行だけを上から数えて 1 始まり)。
+    /// アプリは x, y にいちばん近い矢印の行を画素で探し、その番号と一致するときだけ操作する。
+    #[serde(default)]
+    pub field: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,11 +176,13 @@ pub const SYSTEM_PROMPT: &str = r#"あなたは Line 6 HX Stomp を HX Edit (mac
 - 上部の枠の中がシグナルチェーンで、ブロックのアイコンと名前 (Dist, Amp など) が横に並ぶ。白い枠で囲まれたものが選ばれている。
 - その下の EDIT タブの左側は、カテゴリとモデル名の一覧である。押すとモデルが変わってしまうので、決して指さない。
 - 右側の一番上の行に、選ばれたブロックのモデル名があり、その行の右端に星 (お気に入り) と電源 (On/Off) のアイコンがある。これも指さない。
-- その下に、パラメータが行ごとに縦に並ぶ。1 行は、左上のパラメータ名、その下の横長のバー、行の右端の数値の文字 (例: "4.2") と上下の矢印でできている。
+- その下に、パラメータが行ごとに縦に並ぶ。数値の行は、左上のパラメータ名、その下の横長のバー、行の右端の数値の文字 (例: "4.2", "600 ms") と上下の矢印でできている。
+- 右端に上下の矢印が無い行もある: 段階のボタン (例: 6 / 8 / 10 / 24、Overdrive / Boost / Distortion) や Off / On の切り替え。これらは数値を打ち込めない。
 
 操作の種類:
-- "set_value": いま右側に出ているパラメータの値を変える。x, y はその行の右端の数値の文字の中心を指す (バー・矢印・名前・星ではない。星はすぐ上の行にあるので、縦の位置を正確に)。アプリはそこをダブルクリックして入力欄にし、value を打ち込んで Enter で確定する。
-- "select_block": シグナルチェーン上のブロックをクリックして選ぶ。x, y はそのブロックのアイコンの中心を指す。パラメータは value / previous_value を空文字にする。
+- "set_value": いま右側に出ている数値の行の値を変える。field には、右端に上下の矢印がある行だけを上から数えた番号 (1 始まり) を書く。矢印の無い行 (段階のボタン・Off / On) は数えない。x, y はその行の右端の数値の文字の中心を指す。アプリは画面の画素から矢印の行を見つけ、x, y にいちばん近い行の番号が field と同じときだけ、その行の数値をダブルクリックして入力欄にし、value を打ち込んで Enter で確定する。
+- "select_block": シグナルチェーン上のブロックをクリックして選ぶ。x, y はそのブロックのアイコンの中心を指す。value / previous_value は空文字、field は 0 にする。
+- 矢印の無い行は操作に入れず、explanation で手動の操作として勧める。
 
 座標の決まり:
 - x, y はスクリーンショットの左上を (0, 0)、右下を (1000, 1000) とする正規化座標で返す。x が横、y が縦である。
@@ -222,9 +228,10 @@ pub fn response_schema() -> Value {
                         "x": { "type": "number" },
                         "y": { "type": "number" },
                         "value": { "type": "string" },
-                        "previous_value": { "type": "string" }
+                        "previous_value": { "type": "string" },
+                        "field": { "type": "integer" }
                     },
-                    "required": ["type", "block", "parameter", "x", "y", "value", "previous_value"]
+                    "required": ["type", "block", "parameter", "x", "y", "value", "previous_value", "field"]
                 }
             },
             "needs_another_round": { "type": "boolean" },
@@ -576,6 +583,11 @@ pub fn validate(resp: &AiResponse, purpose: &Purpose, last_round: bool) -> Resul
                 if !is_numeric_value(&a.value) {
                     return Err(format!("{label} の値が数値ではありません: {:?}", a.value));
                 }
+                if a.field == 0 {
+                    return Err(format!(
+                        "{label} の行の番号 (field) がありません。数値を打ち込める行か分からないので実行しません"
+                    ));
+                }
             }
             ActionKind::SelectBlock => {
                 if i + 1 != resp.actions.len() {
@@ -756,6 +768,7 @@ mod tests {
             y: 800.0,
             value: value.into(),
             previous_value: "5.0".into(),
+            field: 4,
         }
     }
 
@@ -1294,6 +1307,26 @@ mod tests {
         assert!(text(false, true).contains("リファレンスは無い"));
         assert!(text(true, false).contains("現在の音は録音されていない"));
         assert!(text(false, false).contains("音声は無い"));
+    }
+
+    #[test]
+    fn validate_requires_a_field_number_for_set_value() {
+        let mut a = action(ActionKind::SetValue, "4.5");
+        a.field = 0;
+        let e = validate(&resp(vec![a]), &ADJUST, false).unwrap_err();
+        assert!(e.contains("field"), "{e}");
+        let mut b = action(ActionKind::SelectBlock, "");
+        b.field = 0;
+        assert!(
+            validate(&resp(vec![b]), &ADJUST, false).is_ok(),
+            "ブロックの選択には要らない"
+        );
+    }
+
+    #[test]
+    fn system_prompt_explains_how_to_count_fields() {
+        assert!(SYSTEM_PROMPT.contains("上下の矢印がある行だけを上から数えた番号"));
+        assert!(SYSTEM_PROMPT.contains("矢印の無い行 (段階のボタン・Off / On) は数えない"));
     }
 
     #[test]

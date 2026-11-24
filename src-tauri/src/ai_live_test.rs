@@ -121,6 +121,32 @@ async fn ai_live_adjust_reads_treble_field() {
         treble.y,
         TREBLE_VALUE
     );
+    assert_eq!(treble.field, 4, "Treble は矢印のある行の 4 番目");
+    assert_clicks_treble(treble);
+}
+
+/// アプリが AI の点と番号から押す位置を決めると、Treble の数値の文字になること。
+fn assert_clicks_treble(a: &ai::AiAction) {
+    use crate::capture::TargetWindow;
+    use crate::geometry::Rect;
+    let rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 604.0,
+    };
+    let window = TargetWindow {
+        window_id: 1,
+        pid: 1,
+        app_name: "HX Edit".into(),
+        title: "HX Edit".into(),
+        rect,
+    };
+    let img = image::load_from_memory(SCREENSHOT).unwrap().to_rgba8();
+    let p = crate::geometry::normalized_to_screen(rect, a.x, a.y).unwrap();
+    let target = crate::automation::locate_field(&img, &window, p, a.field).expect("押す位置");
+    assert!((target.x - 956.0).abs() <= 3.0, "{target:?}");
+    assert!((target.y - (194.0 + 25.7 * 3.0)).abs() <= 3.0, "{target:?}");
 }
 
 #[tokio::test]
@@ -141,6 +167,8 @@ async fn ai_live_revert_types_previous_value() {
         .collect();
     assert_eq!(set.len(), 1, "戻す値は 1 つだけ");
     assert_eq!(set[0].value.trim(), "6.0");
+    assert_eq!(set[0].field, 4);
+    assert_clicks_treble(set[0]);
     assert!(
         near((set[0].x, set[0].y), TREBLE_VALUE),
         "座標 ({}, {}) が正解 {:?} から外れている",

@@ -7,7 +7,7 @@
 // ウィンドウは 1000×604 ポイントを 2 倍 (Retina 相当) の 2000×1208 ピクセルで描く。
 // - シグナルチェーン: Dist (370, 70)・Amp (618, 70, 選択中)・Delay (800, 70)
 // - モデル名の行の右端に星 (951, 174) と電源 (975, 174)。押してはいけない
-// - パラメータ i 行目: 名前と数値の高さ 194 + 25.7 * i、数値の中心 x 956、バー 422〜974
+// - パラメータ i 行目: 名前と数値の高さ 194 + 25.7 * i、数値の中心 x 956、上下の矢印 x 974、バー 422〜974
 
 import AppKit
 
@@ -57,6 +57,18 @@ func text(_ s: String, at p: NSPoint, size: CGFloat, color: NSColor = .white, bo
     ctx.scaleBy(x: 1, y: -1)
     str.draw(at: .zero)
     ctx.restoreGState()
+}
+
+func triangle(center c: NSPoint, width: CGFloat, height: CGFloat, up: Bool, color: NSColor) {
+    let p = NSBezierPath()
+    let tip = up ? c.y - height / 2 : c.y + height / 2
+    let base = up ? c.y + height / 2 : c.y - height / 2
+    p.move(to: NSPoint(x: c.x, y: tip))
+    p.line(to: NSPoint(x: c.x - width / 2, y: base))
+    p.line(to: NSPoint(x: c.x + width / 2, y: base))
+    p.close()
+    color.setFill()
+    p.fill()
 }
 
 let bg = rgb(26, 26, 28)
@@ -163,7 +175,9 @@ for (i, p) in params.enumerated() {
     let y = 194 + CGFloat(i) * 25.7
     text(p.0, at: NSPoint(x: 422, y: y), size: 8.5, color: orange)
     text(String(format: "%.1f", p.1), at: NSPoint(x: 956, y: y), size: 8.5, color: orange, center: true)
-    text("⇕", at: NSPoint(x: 970, y: y), size: 8, color: .lightGray, center: true)
+    // 上下の矢印: 実物と同じく、ブロックの色の小さな三角を 2 つ縦に並べる
+    triangle(center: NSPoint(x: 974, y: y - 4.5), width: 5.5, height: 2.8, up: true, color: orange)
+    triangle(center: NSPoint(x: 974, y: y + 4.5), width: 5.5, height: 2.8, up: false, color: orange)
     let barY = y + 7
     let end = 422 + 552 * CGFloat(p.1) / 10
     fill(NSRect(x: 422, y: barY, width: end - 422, height: 5), barDark)

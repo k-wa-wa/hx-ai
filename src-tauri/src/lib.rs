@@ -13,6 +13,7 @@ mod macos;
 mod permission;
 mod screen_check;
 mod sound;
+mod value_fields;
 mod workflow;
 #[cfg(test)]
 mod workflow_test;

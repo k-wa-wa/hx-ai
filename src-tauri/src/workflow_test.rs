@@ -151,6 +151,8 @@ fn set(param: &str, x: f64, prev: &str, value: &str) -> AiAction {
         y: 800.0,
         value: value.into(),
         previous_value: prev.into(),
+        // 偽の画面で y = 800 は 15 番目の数値の行
+        field: 15,
     }
 }
 
@@ -163,6 +165,7 @@ fn select(block: &str) -> AiAction {
         y: 190.0,
         value: String::new(),
         previous_value: String::new(),
+        field: 0,
     }
 }
 

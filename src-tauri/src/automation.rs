@@ -17,6 +17,7 @@ use image::RgbaImage;
 
 use crate::geometry::{self, Point, Rect, ScreenWindow};
 use crate::screen_check::{self, Refusal};
+use crate::value_fields;
 
 const AFTER_ACTIVATE: Duration = Duration::from_millis(300);
 const AFTER_MOVE: Duration = Duration::from_millis(80);
@@ -142,34 +143,69 @@ fn execute_inner(
         }
         check_guards(desktop, window, p)?;
 
-        let (x, y) = round_point(p);
-        desktop.move_mouse(x, y)?;
-        desktop.wait(AFTER_MOVE);
-
-        match a.kind {
+        let (x, y) = match a.kind {
             ActionKind::SetValue => {
+                // AI の座標そのものではなく、画素で見つけた数値の文字を押す
                 let before = desktop.capture_window(window)?;
+                let target = locate_field(&before, window, p, a.field)?;
+                check_guards(desktop, window, target)?;
+                let (x, y) = round_point(target);
+                desktop.move_mouse(x, y)?;
+                desktop.wait(AFTER_MOVE);
                 desktop.click()?;
                 desktop.wait(BETWEEN_CLICKS);
                 desktop.click()?;
                 desktop.wait(AFTER_DOUBLE_CLICK);
                 // ダブルクリックで別のウィンドウが開いていないかを確かめてから打ち込む
                 ensure_frontmost(desktop, window.pid as i32)?;
-                ensure_field_opened(desktop, window, p, &before)?;
+                ensure_field_opened(desktop, window, target, &before)?;
                 desktop.type_text(a.value.trim())?;
                 desktop.wait(AFTER_TYPING);
                 desktop.press_enter()?;
                 desktop.wait(AFTER_ENTER);
+                (x, y)
             }
             ActionKind::SelectBlock => {
+                let (x, y) = round_point(p);
+                desktop.move_mouse(x, y)?;
+                desktop.wait(AFTER_MOVE);
                 desktop.click()?;
                 desktop.wait(AFTER_SELECT_BLOCK);
+                (x, y)
             }
-        }
+        };
         done.push(to_done(a));
         last_mouse = Some((x, y));
     }
     Ok(())
+}
+
+/// 撮った画像から数値を打ち込める行を見つけ、AI が指した高さにいちばん近い行の
+/// 数値の文字の真ん中 (画面座標) を返す。その行の番号が AI の答えた `field` と違えば、
+/// 読み違いの恐れがあるので操作しない。
+pub(crate) fn locate_field(
+    img: &RgbaImage,
+    window: &TargetWindow,
+    p: Point,
+    field: u32,
+) -> Result<Point, String> {
+    let scale_x = img.width() as f64 / window.rect.width;
+    let scale_y = img.height() as f64 / window.rect.height;
+    let fields = value_fields::find(img, scale_x);
+    let (index, f) = value_fields::nearest(&fields, (p.y - window.rect.y) * scale_y)
+        .ok_or_else(|| {
+            "数値を打ち込める行 (右端に上下の矢印がある行) が画面に見つかりません。ダイアログが開いているか、ブロックが選ばれていない恐れがあるので操作しません".to_string()
+        })?;
+    if index != field as usize {
+        return Err(format!(
+            "AI が指した高さにいちばん近い数値の行は上から {index} 番目ですが、AI は {field} 番目と答えました。読み違いの恐れがあるので操作しません"
+        ));
+    }
+    let (vx, vy) = f.value.center();
+    Ok(Point {
+        x: window.rect.x + vx / scale_x,
+        y: window.rect.y + vy / scale_y,
+    })
 }
 
 /// ダブルクリックの前後を撮り比べ、数値欄の入力が始まったことを確かめる。
@@ -224,6 +260,40 @@ pub mod fake {
 
     const SCREEN: image::Rgba<u8> = image::Rgba([30, 30, 34, 255]);
     const FIELD: image::Rgba<u8> = image::Rgba([220, 220, 225, 255]);
+    const ORANGE: image::Rgba<u8> = image::Rgba([236, 150, 50, 255]);
+
+    /// 数値の行の番号 (1 始まり)。n 番目の行の高さは `field_y(n)` (画像のピクセル)。
+    pub const FIELD_ROWS: std::ops::RangeInclusive<u32> = 1..=18;
+    /// 数値の文字の真ん中の x (画像のピクセル)。
+    pub const VALUE_X: u32 = 904;
+
+    pub fn field_y(n: u32) -> u32 {
+        50 + 50 * n
+    }
+
+    /// HX Edit のパラメータ欄のように、数値の文字と上下の矢印の行を並べた画面 (1000×1000)。
+    pub fn screen_with_fields() -> RgbaImage {
+        let mut img = RgbaImage::from_pixel(1000, 1000, SCREEN);
+        for n in FIELD_ROWS {
+            let y = field_y(n);
+            // 数値の文字 (x 890〜918、高さ 10)
+            for yy in y - 5..y + 5 {
+                for xx in 890..918 {
+                    img.put_pixel(xx, yy, ORANGE);
+                }
+            }
+            // 上向きと下向きの三角 (幅 7、高さ 4)
+            for (i, width) in [1u32, 3, 5, 7].iter().enumerate() {
+                let i = i as u32;
+                for dx in 0..*width {
+                    let xx = 933 - width / 2 + dx;
+                    img.put_pixel(xx, y - 7 + i, ORANGE);
+                    img.put_pixel(xx, y + 6 - i, ORANGE);
+                }
+            }
+        }
+        img
+    }
 
     /// 偽のデスクトップの状態。テストから書き換えて「途中で何かが起きた」を再現する。
     pub struct World {
@@ -234,8 +304,10 @@ pub mod fake {
         /// HX Edit より手前にあるウィンドウ。
         pub overlays: Vec<ScreenWindow>,
         pub mouse: (i32, i32),
-        /// ウィンドウの中身 (1 ポイント = 1 ピクセル)。
+        /// ウィンドウの中身 (ウィンドウが 1000×1000 なら 1 ポイント = 1 ピクセル)。
         pub screen: RgbaImage,
+        /// Enter で入力欄が閉じたときに戻る画面。
+        pub base: RgbaImage,
         /// クリックすると、その位置に入力欄が開いたように描く。
         pub click_opens_field: bool,
     }
@@ -280,7 +352,8 @@ pub mod fake {
                     rect: Some(hx_rect()),
                     overlays: vec![],
                     mouse: (0, 0),
-                    screen: RgbaImage::from_pixel(1000, 1000, SCREEN),
+                    screen: screen_with_fields(),
+                    base: screen_with_fields(),
                     click_opens_field: true,
                 },
                 events: vec![],
@@ -352,9 +425,10 @@ pub mod fake {
             if self.world.click_opens_field {
                 let (mx, my) = self.world.mouse;
                 let r = self.world.rect.unwrap_or_else(hx_rect);
+                let k = self.world.screen.width() as f64 / r.width;
                 let (x, y) = (
-                    (mx as f64 - r.x).max(0.0) as u32,
-                    (my as f64 - r.y).max(0.0) as u32,
+                    ((mx as f64 - r.x) * k).max(0.0) as u32,
+                    ((my as f64 - r.y) * k).max(0.0) as u32,
                 );
                 self.world
                     .paint(x.saturating_sub(15), y.saturating_sub(6), 30, 12);
@@ -368,11 +442,7 @@ pub mod fake {
         }
         fn press_enter(&mut self) -> Result<(), String> {
             // 値が確定して入力欄が閉じる
-            self.world.screen = RgbaImage::from_pixel(
-                self.world.screen.width(),
-                self.world.screen.height(),
-                SCREEN,
-            );
+            self.world.screen = self.world.base.clone();
             self.record(Ev::Enter);
             Ok(())
         }
@@ -389,7 +459,7 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
-    use super::fake::{Ev, FakeDesktop, HX_PID, HX_WINDOW, World, hx_rect};
+    use super::fake::{Ev, FakeDesktop, HX_PID, HX_WINDOW, VALUE_X, World, hx_rect};
     use super::*;
 
     fn window() -> TargetWindow {
@@ -402,6 +472,12 @@ mod tests {
         }
     }
 
+    /// 偽の画面で高さ y (ウィンドウが原点の 1000×1000 なので画面座標と同じ) にある数値の行の番号。
+    fn row_at(y: f64) -> u32 {
+        (((y - 50.0) / 50.0).round() as u32).clamp(1, 18)
+    }
+
+    /// AI が指した点と、その高さにある行の番号を答えた set_value。
     fn set_value(x: f64, y: f64, value: &str) -> AiAction {
         AiAction {
             kind: ActionKind::SetValue,
@@ -411,6 +487,7 @@ mod tests {
             y,
             value: value.into(),
             previous_value: "4".into(),
+            field: row_at(y),
         }
     }
 
@@ -423,6 +500,7 @@ mod tests {
             y,
             value: String::new(),
             previous_value: String::new(),
+            field: 0,
         }
     }
 
@@ -437,7 +515,9 @@ mod tests {
         })
     }
 
-    fn set_value_events(x: i32, y: i32, v: &str) -> Vec<Ev> {
+    /// 高さ y の行の数値の文字 (x は VALUE_X) をダブルクリックして打ち込む操作。
+    fn set_value_events(y: i32, v: &str) -> Vec<Ev> {
+        let x = VALUE_X as i32;
         vec![
             Ev::Move(x, y),
             Ev::Click,
@@ -487,8 +567,8 @@ mod tests {
             Ev::Activate(HX_PID),
             "最初に HX Edit を前面に出す"
         );
-        let mut expected = set_value_events(500, 500, "6.0");
-        expected.extend(set_value_events(300, 800, "-3"));
+        let mut expected = set_value_events(500, "6.0");
+        expected.extend(set_value_events(800, "-3"));
         assert_eq!(d.input_events(), expected);
     }
 
@@ -550,7 +630,7 @@ mod tests {
         );
         assert!(out.error.unwrap().contains("最前面"));
         assert_eq!(out.done.len(), 1, "1 つ目は実行済みとして Undo に残す");
-        assert_eq!(d.input_events(), set_value_events(500, 500, "5"));
+        assert_eq!(d.input_events(), set_value_events(500, "5"));
     }
 
     #[test]
@@ -604,7 +684,7 @@ mod tests {
         assert!(out.error.unwrap().contains("HX AI"));
         assert_eq!(
             d.input_events(),
-            set_value_events(500, 500, "5"),
+            set_value_events(500, "5"),
             "覆われた 2 つ目の座標にはマウスを動かさない"
         );
     }
@@ -691,25 +771,92 @@ mod tests {
     }
 
     #[test]
-    fn the_near_area_follows_the_window_position_and_scale() {
+    fn window_position_and_scale_are_used_for_the_field_and_the_check() {
         // ウィンドウを (100, 50) にずらし、撮った画像は 2 倍 (Retina)。
-        // 入力欄の変化はクリックした所の周りにあるので、許される
+        // AI の点 (600, 500) は画面 (400, 300) = 画像の高さ 500 = 9 番目の行。
+        // 押すのは数値の文字の真ん中 (画像 (904, 500)) = 画面 (552, 300)
         let rect = Rect {
             x: 100.0,
             y: 50.0,
             width: 500.0,
             height: 500.0,
         };
-        let mut d = FakeDesktop::new().on_event(|ev, w| {
-            if *ev == Ev::Click {
-                // (400, 300) ポイント = ウィンドウ内 (300, 250) = 画像 (600, 500)
-                w.paint(580, 490, 40, 20);
-            }
-        });
+        let mut d = FakeDesktop::new();
         d.world.rect = Some(rect);
-        d.world.click_opens_field = false;
         let w = TargetWindow { rect, ..window() };
-        let out = execute(&mut d, &[set_value(600.0, 500.0, "7.0")], &w);
-        assert_eq!(out.error, None, "周りの変化として数える");
+        let mut a = set_value(600.0, 500.0, "7.0");
+        a.field = 9;
+        let out = execute(&mut d, &[a], &w);
+        assert_eq!(
+            out.error, None,
+            "入力欄の変化はクリックした所の周りとして数える"
+        );
+        assert_eq!(d.input_events()[0], Ev::Move(552, 300));
+    }
+
+    // ---- 数値の行の照合 ----
+
+    #[test]
+    fn a_point_between_rows_snaps_to_the_value_of_the_nearest_row() {
+        let mut d = FakeDesktop::new();
+        let mut a = set_value(300.0, 520.0, "7.0");
+        a.field = 9; // 高さ 500 の行
+        let out = execute(&mut d, &[a], &window());
+        assert_eq!(out.error, None);
+        assert_eq!(d.input_events()[0], Ev::Move(VALUE_X as i32, 500));
+    }
+
+    #[test]
+    fn a_row_number_that_does_not_match_the_point_is_refused() {
+        let mut d = FakeDesktop::new();
+        let mut a = set_value(500.0, 500.0, "7.0");
+        a.field = 3;
+        let out = execute(&mut d, &[a], &window());
+        let e = out.error.unwrap();
+        assert!(e.contains("上から 9 番目") && e.contains("3 番目"), "{e}");
+        assert!(d.input_events().is_empty(), "マウスも動かさない");
+    }
+
+    #[test]
+    fn no_value_rows_on_screen_is_refused() {
+        let mut d = FakeDesktop::new();
+        d.world.screen = RgbaImage::from_pixel(1000, 1000, image::Rgba([30, 30, 34, 255]));
+        let out = execute(&mut d, &[set_value(500.0, 500.0, "7.0")], &window());
+        assert!(out.error.unwrap().contains("見つかりません"));
+        assert!(d.input_events().is_empty());
+    }
+
+    #[test]
+    fn on_the_real_screen_a_point_near_the_star_still_clicks_the_gain_value() {
+        // 実機で起きたこと: Gain の数値のすぐ上の星マークを押した。
+        // 実物の画面 (1440×870 ポイントを 2000 ピクセルに縮めたもの) で、AI が星の高さを
+        // 指しても、答えた番号が 1 (Gain) なら Gain の数値 "4.2" の真ん中を押す
+        let img = image::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/real_hx_dist.png"
+        ))
+        .unwrap()
+        .to_rgba8();
+        let rect = Rect {
+            x: 0.0,
+            y: 30.0,
+            width: 1440.0,
+            height: 1440.0 * img.height() as f64 / img.width() as f64,
+        };
+        let w = TargetWindow { rect, ..window() };
+        let k = img.width() as f64 / rect.width;
+        // 星マークは画像の (1903, 347)
+        let star = Point {
+            x: rect.x + 1903.0 / k,
+            y: rect.y + 347.0 / k,
+        };
+        let target = locate_field(&img, &w, star, 1).unwrap();
+        let (vx, vy) = ((target.x - rect.x) * k, (target.y - rect.y) * k);
+        assert!(
+            (vx - 1913.0).abs() <= 2.0 && (vy - 389.0).abs() <= 3.0,
+            "{vx}, {vy}"
+        );
+        // 番号を 2 (Tone) と答えていたら、星の高さに近いのは Gain なので食い違いで止める
+        assert!(locate_field(&img, &w, star, 2).is_err());
     }
 }
