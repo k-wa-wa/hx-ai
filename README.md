@@ -74,6 +74,11 @@ OPENAI_MODEL=gemini-3.8-flash
    - キャプチャした時からウィンドウが動いていない
    - その座標で一番手前のウィンドウが HX Edit である (このアプリなどが重なっていない)
    - 前の操作からマウスが動かされていない
+
+   押す場所は AI の座標そのものではなく、画素で見つけた数値の文字である。HX Edit はアクセシビリティツリーに部品を出していない (ウィンドウの中は 1 つの描画領域) ので、画素で探す。
+   - 数値を打ち込める行は、右端にブロックの色の小さな三角が上下に並んだ矢印がある。段階のボタンや Off/On の行には無い
+   - AI は、矢印のある行だけを上から数えた番号 (`field`) も返す。AI の点にいちばん近い行の番号が `field` と同じときだけ、その行の数値の文字の真ん中を押す。食い違えば、または行が見つからなければ (ダイアログで画面が暗いときなど) 操作しない
+   - ダブルクリックの前後でウィンドウを撮り比べる。押した所の周り以外が大きく変わったら (ダイアログや一覧が開いた) Escape で閉じて止め、周りが変わらなければ (入力欄が開かない) 打ち込まずに止める
 7. AI が画面に出ていないブロックを選ぶ (`select_block`) と返したら、クリックして撮り直し、もう一度聞く (最大 4 回)。
 
 ## エフェクト一覧
@@ -139,6 +144,8 @@ swift scripts/make_mock_screenshot.swift src-tauri/tests/fixtures/mock_hx_edit.p
 | `src-tauri/src/workflow.rs` | 1 サイクル・Undo・手動送信・自動ループの流れ、Undo 履歴 |
 | `src-tauri/src/ai.rs` | リクエストの組み立て、応答の解釈と検証、API 呼び出し (429/5xx は 2 回まで再試行) |
 | `src-tauri/src/automation.rs` | enigo による操作と、操作ごとのガードレール |
+| `src-tauri/src/value_fields.rs` | 数値を打ち込める行 (上下の矢印と数値の文字) を画素で見つける (純粋関数) |
+| `src-tauri/src/screen_check.rs` | ダブルクリックの前後の画面を比べ、打ち込んでよいかを決める (純粋関数) |
 | `src-tauri/src/catalog.rs` | エフェクト一覧 (`catalog/hx_stomp.json`) の検索 |
 | `src-tauri/src/geometry.rs` | 座標変換とガードレールの判定 (純粋関数) |
 | `src-tauri/src/capture.rs` | xcap によるウィンドウの検出とキャプチャ |

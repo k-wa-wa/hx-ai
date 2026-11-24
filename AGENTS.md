@@ -15,6 +15,9 @@
 | 守りたいもの | 置き場所 |
 | --- | --- |
 | 自動操作のガードレール (最前面・ウィンドウの移動・重なり・マウスの介入) | `src-tauri/src/automation.rs` の `FakeDesktop` を使うテスト。ガード 1 つにつきテスト 1 つ |
+| 数値の行の検出 (上下の矢印・数値の文字・矢印の無い行を数えない) | `src-tauri/src/value_fields.rs` のテスト。実物の HX Edit の画面 (`tests/fixtures/real_hx_*.png`) で確かめる。新しい種類の画面で誤ったら、その画面を足す |
+| 行の番号の照合と、押す位置 | `src-tauri/src/automation.rs` のテスト (`FakeDesktop` は 50 ピクセルごとに数値の行を描いた画面を持つ) |
+| ダブルクリックの前後の撮り比べ | `src-tauri/src/screen_check.rs` (判定) と `automation.rs` (ダイアログが開いたときの Escape) |
 | エフェクト一覧の中身と検索 | `src-tauri/src/catalog.rs` のテスト。件数を固定してあるので、一覧を作り直したら件数も直す |
 | ツール呼び出し (検索 → 結果 → 答え、検索の上限) | `src-tauri/src/ai.rs` のテスト (返事の解釈) と `src-tauri/src/ai_http_test.rs` (往復) |
 | サイクルと Undo の流れ (撮り直し・回数の上限・途中失敗・戻せなかった値) | `src-tauri/src/workflow_test.rs` の `FakeEngine` |
