@@ -1060,11 +1060,6 @@ mod tests {
         let mut port = UsbHxPort::new().unwrap();
         let before = port.read_snapshot().unwrap();
         println!("接続成功:\n{}", render_chain(&before));
-        assert!(
-            !before.slot_label.ends_with('A'),
-            "*A のパッチ ({}) は保護のため変更しない",
-            before.slot_label
-        );
 
         let (block_id, param_name, next_val, old_val) = before
             .blocks

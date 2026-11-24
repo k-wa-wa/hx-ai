@@ -125,7 +125,7 @@ cd src-tauri && cargo test ai_live -- --ignored --nocapture --test-threads=1
 
 ### 実機 USB テスト
 
-実機を接続したときだけ手動で走らせる (既定では走らない)。安全のため、スロット末尾が `*A` のプリセット上では中断する。
+実機を接続したときだけ手動で走らせる (既定では走らない)。一時編集バッファを 1 項目だけ書き換えて元に戻す (`save` は行わない)。
 
 ```sh
 cd src-tauri && HX_USB_LIVE=1 cargo test --lib hx_usb_round_trip -- --ignored --nocapture
