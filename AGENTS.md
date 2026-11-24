@@ -16,22 +16,19 @@
 
 | 守りたいもの | 置き場所 |
 | --- | --- |
-| 自動操作のガードレール (最前面・ウィンドウの移動・重なり・マウスの介入) | `src-tauri/src/automation.rs` の `FakeDesktop` を使うテスト。ガード 1 つにつきテスト 1 つ |
-| 数値の行の検出 (上下の矢印・数値の文字・矢印の無い行を数えない) | `src-tauri/src/value_fields.rs` のテスト。実物の HX Edit の画面 (`tests/fixtures/real_hx_*.png`) で確かめる。新しい種類の画面で誤ったら、その画面を足す |
-| 行の番号の照合と、押す位置 | `src-tauri/src/automation.rs` のテスト (`FakeDesktop` は 50 ピクセルごとに数値の行を描いた画面を持つ) |
-| ダブルクリックの前後の撮り比べ | `src-tauri/src/screen_check.rs` (判定) と `automation.rs` (ダイアログが開いたときの Escape) |
+| チェーン文字列化・変更の検証・USB 書き込みと Undo 復元 (ロック中・範囲外・型違い・途中失敗) | `src-tauri/src/hx_device.rs` のテスト (`FakePort` と、`#[ignore]` の実機往復テスト) |
 | エフェクト一覧の中身と検索 | `src-tauri/src/catalog.rs` のテスト。件数を固定してあるので、一覧を作り直したら件数も直す |
 | ツール呼び出し (検索 → 結果 → 答え、検索の上限) | `src-tauri/src/ai.rs` のテスト (返事の解釈) と `src-tauri/src/ai_http_test.rs` (往復) |
-| サイクルと Undo の流れ (撮り直し・回数の上限・途中失敗・戻せなかった値) | `src-tauri/src/workflow_test.rs` の `FakeEngine` |
+| サイクルと Undo の流れ (途中失敗・戻せなかった値・USB セッション制御) | `src-tauri/src/workflow_test.rs` の `FakeEngine` |
 | 手動送信と自動ループの流れ (録音の使い切り・止まる条件・停止の合図・途中の指示) | `src-tauri/src/workflow_test.rs` の `FakeEngine` (録音とフックも台本で与える) |
 | 録音とリファレンスの加工 (無音の削除・リサンプル・区間の切り出し) | `src-tauri/src/sound.rs` のテスト。リサンプルは理想の正弦波と 1 サンプルずつ比べる |
 | AI API の HTTP (再試行・エラー) | `src-tauri/src/ai_http_test.rs` (wiremock) |
 | AI に渡すスキーマ・プロンプトと Rust の型の一致 | `src-tauri/src/ai.rs` のテスト |
-| 座標変換と境界 | `src-tauri/src/geometry.rs` のテスト |
+| 権限の不足と許可操作の判定 | `src-tauri/src/permission.rs` のテスト |
 | 画面の振る舞い | `src/App.test.tsx` (`src/test/backend.ts` の偽のバックエンド) |
 | フロントエンドと Rust のコマンド名・引数名 | `src/contract.test.ts` (ソースを読んで突き合わせる) |
 
-OS に触る処理 (`macos.rs`・`capture.rs`・`audio.rs` など) は薄く保ち、判断は純粋関数に切り出してテストする。
+OS や外部デバイスに触る処理 (`macos.rs`・`audio.rs`・`hx_device.rs` の `UsbHxPort` など) は薄く保ち、判断は純粋関数に切り出してテストする。
 
 ## 変異テスト
 
