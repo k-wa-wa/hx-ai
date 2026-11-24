@@ -4,8 +4,6 @@
 exclude_globs = [
   "src/macos.rs",
   "src/audio.rs",
-  "src/capture.rs",
-  "src/ax.rs",
   "src/lib.rs",
   "src/*_test.rs",
   "src/main.rs",
@@ -14,15 +12,16 @@ exclude_globs = [
 # 正規表現は「replace X with Y in 関数名」「replace 関数名 -> 型 with 値」という表示名に当たる。
 # 表示名にモジュールのパスは含まれないので、「workflow::」のようには書けない。
 exclude_re = [
-  "MacDesktop",
+  "UsbHxPort",
+  "probe_status",
+  "format_usb_error",
   "TauriEngine",
   "emit_progress",
   "blocking",
-  "ensure_permissions",
+  "ensure_microphone_permission",
   # Tauri から呼ぶ入口 (権限・録音・本物のエンジンを組み立てる)。流れは auto_loop / send / revert でテストする
   "\\b(replace|in) (run_loop|send_message|start_recording|stop_recording|undo_last)( |$)",
   "replace process_env ",
-  "open_prompt_to_get_permissions",
   # 待ち時間は 0 で走らせるので、値を変えてもテストでは区別できない
   "\\b(replace|in) call( |$)",
 ]

@@ -1,4 +1,4 @@
-//! AI 接続先や操作対象アプリの設定。
+//! AI 接続先の設定。
 //!
 //! 設定画面で保存した値 (アプリの設定ディレクトリの settings.json) を使う。
 //! 開発時 (debug ビルド) だけ、空の項目を環境変数 (.env を含む) で補う。
@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta/openai/";
 pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
-pub const DEFAULT_TARGET_APP: &str = "HX Edit";
 
 /// settings.json に保存する内容。空文字は「未設定」として環境変数・既定値に任せる。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -19,7 +18,6 @@ pub struct StoredSettings {
     pub api_base_url: String,
     pub api_key: String,
     pub model: String,
-    pub target_app: String,
 }
 
 /// 実際に使う値。
@@ -28,7 +26,6 @@ pub struct ResolvedSettings {
     pub api_base_url: String,
     pub api_key: String,
     pub model: String,
-    pub target_app: String,
 }
 
 /// 画面に返す設定の状態。API キーそのものは返さない。
@@ -37,7 +34,6 @@ pub struct SettingsView {
     pub stored: StoredSettingsView,
     pub effective_base_url: String,
     pub effective_model: String,
-    pub effective_target_app: String,
     /// "settings" | "env" | "missing"
     pub api_key_source: String,
 }
@@ -46,7 +42,6 @@ pub struct SettingsView {
 pub struct StoredSettingsView {
     pub api_base_url: String,
     pub model: String,
-    pub target_app: String,
     pub has_api_key: bool,
 }
 
@@ -88,8 +83,6 @@ impl StoredSettings {
             api_key,
             model: pick(&self.model, env, "OPENAI_MODEL")
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            target_app: pick(&self.target_app, env, "HX_TARGET_APP")
-                .unwrap_or_else(|| DEFAULT_TARGET_APP.to_string()),
         })
     }
 
@@ -105,15 +98,12 @@ impl StoredSettings {
             stored: StoredSettingsView {
                 api_base_url: self.api_base_url.clone(),
                 model: self.model.clone(),
-                target_app: self.target_app.clone(),
                 has_api_key: non_empty(&self.api_key).is_some(),
             },
             effective_base_url: pick(&self.api_base_url, env, "OPENAI_BASE_URL")
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
             effective_model: pick(&self.model, env, "OPENAI_MODEL")
                 .unwrap_or_else(|| DEFAULT_MODEL.to_string()),
-            effective_target_app: pick(&self.target_app, env, "HX_TARGET_APP")
-                .unwrap_or_else(|| DEFAULT_TARGET_APP.to_string()),
             api_key_source: api_key_source.to_string(),
         }
     }
@@ -176,7 +166,6 @@ mod tests {
         assert_eq!(r.api_key, "ui-key");
         assert_eq!(r.model, "ui-model");
         assert_eq!(r.api_base_url, DEFAULT_BASE_URL);
-        assert_eq!(r.target_app, DEFAULT_TARGET_APP);
     }
 
     #[test]

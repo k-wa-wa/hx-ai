@@ -1,31 +1,10 @@
-//! macOS 固有の処理: 権限 (マイク・画面収録・アクセシビリティ)。
-
-use std::ffi::c_void;
+//! macOS 固有の処理: マイク権限の確認と要求。
 
 use block2::RcBlock;
-use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-use objc2_foundation::{NSDictionary, NSNumber, NSString};
 
 use crate::permission::{self, PermissionStatus};
-
-#[link(name = "ApplicationServices", kind = "framework")]
-unsafe extern "C" {
-    fn AXIsProcessTrusted() -> bool;
-    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
-    static kAXTrustedCheckOptionPrompt: *const c_void;
-}
-
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGPreflightScreenCaptureAccess() -> bool;
-    fn CGRequestScreenCaptureAccess() -> bool;
-}
-
-fn bool_status(granted: bool) -> String {
-    if granted { "granted" } else { "denied" }.to_string()
-}
 
 fn microphone_status() -> String {
     let Some(media_type) = (unsafe { AVMediaTypeAudio }) else {
@@ -43,8 +22,6 @@ fn microphone_status() -> String {
 pub fn permission_status() -> PermissionStatus {
     PermissionStatus {
         microphone: microphone_status(),
-        screen_recording: bool_status(unsafe { CGPreflightScreenCaptureAccess() }),
-        accessibility: bool_status(unsafe { AXIsProcessTrusted() }),
     }
 }
 
@@ -53,8 +30,6 @@ pub fn grant_permission(kind: &str) -> Result<(), String> {
     let status = permission_status();
     let state = match kind {
         "microphone" => &status.microphone,
-        "screen_recording" => &status.screen_recording,
-        "accessibility" => &status.accessibility,
         other => return Err(format!("不明な権限です: {other}")),
     };
     let plan = permission::grant_plan(kind, state)?;
@@ -77,18 +52,6 @@ fn ask_permission(kind: &str) -> Result<(), String> {
             unsafe {
                 AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &handler)
             };
-            Ok(())
-        }
-        "screen_recording" => {
-            unsafe { CGRequestScreenCaptureAccess() };
-            Ok(())
-        }
-        "accessibility" => {
-            let key: &NSString = unsafe { &*(kAXTrustedCheckOptionPrompt as *const NSString) };
-            let value = NSNumber::new_bool(true);
-            let options: Retained<NSDictionary<NSString, NSNumber>> =
-                NSDictionary::from_slices(&[key], &[&*value]);
-            unsafe { AXIsProcessTrustedWithOptions(Retained::as_ptr(&options) as *const c_void) };
             Ok(())
         }
         other => Err(format!("不明な権限です: {other}")),

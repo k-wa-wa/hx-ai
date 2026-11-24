@@ -14,14 +14,13 @@ async function renderSettings() {
 
 describe("macOS の権限", () => {
   it("足りない権限だけに「許可する」を出す", async () => {
-    setupBackend({ permission_status: () => ({ ...GRANTED, accessibility: "denied" }) });
+    setupBackend({ permission_status: () => ({ microphone: "denied" }) });
     await renderSettings();
     expect(await screen.findAllByRole("button", { name: "許可する" })).toHaveLength(1);
-    expect(screen.getAllByText("許可済み")).toHaveLength(2);
   });
 
   it("「許可する」で許可を求め、少し後に状態を確かめ直す", async () => {
-    let status = { ...GRANTED, screen_recording: "denied" };
+    let status = { microphone: "denied" };
     const b = setupBackend({
       permission_status: () => status,
       grant_permission: () => {
@@ -31,13 +30,13 @@ describe("macOS の権限", () => {
     });
     const user = await renderSettings();
     await user.click(await screen.findByRole("button", { name: "許可する" }));
-    expect(b.callsTo("grant_permission")).toEqual([{ kind: "screen_recording" }]);
+    expect(b.callsTo("grant_permission")).toEqual([{ kind: "microphone" }]);
     await waitFor(() => expect(screen.queryByRole("button", { name: "許可する" })).not.toBeInTheDocument());
-    expect(screen.getAllByText("許可済み")).toHaveLength(3);
+    expect(screen.getAllByText("許可済み")).toHaveLength(1);
   });
 
   it("↻ で状態を確かめ直す", async () => {
-    const b = setupBackend({ permission_status: () => ({ ...GRANTED, microphone: "not_determined" }) });
+    const b = setupBackend({ permission_status: () => ({ microphone: "not_determined" }) });
     const user = await renderSettings();
     const before = b.callsTo("permission_status").length;
     await user.click(screen.getByRole("button", { name: "再確認" }));
@@ -46,7 +45,7 @@ describe("macOS の権限", () => {
 
   it("許可を求められないときはエラーを出す", async () => {
     setupBackend({
-      permission_status: () => ({ ...GRANTED, microphone: "denied" }),
+      permission_status: () => ({ microphone: "denied" }),
       grant_permission: () => {
         throw "システム設定を開けません";
       },
@@ -71,7 +70,7 @@ describe("AI の設定", () => {
     await user.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(b.callsTo("save_settings")).toHaveLength(1));
     expect(b.callsTo("save_settings")[0]).toEqual({
-      input: { apiBaseUrl: "", apiKey: null, model: "other-model", targetApp: "" },
+      input: { apiBaseUrl: "", apiKey: null, model: "other-model" },
     });
   });
 

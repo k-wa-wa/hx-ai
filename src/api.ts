@@ -2,13 +2,11 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-export type PermissionKind = "microphone" | "screen_recording" | "accessibility";
+export type PermissionKind = "microphone";
 export type PermissionState = "granted" | "denied" | "not_determined";
 
 export interface PermissionStatus {
   microphone: PermissionState;
-  screen_recording: PermissionState;
-  accessibility: PermissionState;
 }
 
 export interface InputDevice {
@@ -21,12 +19,10 @@ export interface SettingsView {
   stored: {
     api_base_url: string;
     model: string;
-    target_app: string;
     has_api_key: boolean;
   };
   effective_base_url: string;
   effective_model: string;
-  effective_target_app: string;
   api_key_source: "settings" | "env" | "missing";
 }
 
@@ -35,15 +31,12 @@ export interface SettingsInput {
   /** null なら保存済みのキーを変えない。空文字なら消す。 */
   apiKey: string | null;
   model: string;
-  targetApp: string;
 }
 
-export interface TargetWindow {
-  window_id: number;
-  pid: number;
-  app_name: string;
-  title: string;
-  rect: { x: number; y: number; width: number; height: number };
+export interface HxStatus {
+  connected: boolean;
+  device_name: string | null;
+  session_open: boolean;
 }
 
 export interface ReferenceInfo {
@@ -75,13 +68,10 @@ export interface CycleReport {
   changes: DoneAction[];
   error: string | null;
   recording_peak_dbfs: number | null;
-  rounds: number;
   undo_depth: number;
   not_restored: RestoreTarget[];
   /** AI が「目標に届いた」と判断したか。 */
   goal_reached: boolean;
-  /** 自動操作がガードレールで止まったか。 */
-  interrupted: boolean;
   /** 送った録音が使われずに残っているか。 */
   recording_kept: boolean;
 }
@@ -117,7 +107,8 @@ export const api = {
   permissionStatus: () => invoke<PermissionStatus>("permission_status"),
   /** 許可を求める。一度拒否されているなどダイアログが出ないときはシステム設定を開く。 */
   grantPermission: (kind: PermissionKind) => invoke<void>("grant_permission", { kind }),
-  findTargetWindow: () => invoke<TargetWindow>("find_target_window"),
+  hxStatus: () => invoke<HxStatus>("hx_status"),
+  disconnectHx: () => invoke<HxStatus>("disconnect_hx"),
   setReference: (path: string) => invoke<ReferenceInfo>("set_reference", { path }),
   setReferenceStart: (seconds: number) => invoke<ReferenceInfo>("set_reference_start", { seconds }),
   getReferenceAudio: () => invoke<ArrayBuffer>("get_reference_audio"),

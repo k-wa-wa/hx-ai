@@ -133,7 +133,14 @@ impl AppState {
         self.undo_stack.lock().map(|s| s.len()).unwrap_or(0)
     }
 
-    #[allow(dead_code)]
+    pub fn is_hx_session_open(&self) -> bool {
+        self.hx
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|p| p.is_session_open()))
+            .unwrap_or(false)
+    }
+
     pub fn disconnect_hx(&self) {
         if let Ok(mut guard) = self.hx.lock()
             && let Some(port) = guard.as_mut()
@@ -167,13 +174,11 @@ pub struct CycleReport {
     /// 途中で止まった理由。最後まで終わったときは None。
     pub error: Option<String>,
     pub recording_peak_dbfs: Option<f32>,
-    pub rounds: usize,
     pub undo_depth: usize,
     /// Undo で戻せなかった値 (Undo のときだけ使う)。
     pub not_restored: Vec<RestoreTarget>,
     /// AI が「目標に届いた。これ以上変えなくてよい」と判断したか。
     pub goal_reached: bool,
-    pub interrupted: bool,
     /// 送った録音が使われずに残っているか (手動モードで、何も変えずに失敗したとき)。
     pub recording_kept: bool,
 }
@@ -185,11 +190,9 @@ impl CycleReport {
             changes: vec![],
             error: None,
             recording_peak_dbfs,
-            rounds: 1,
             undo_depth: 0,
             not_restored: vec![],
             goal_reached: false,
-            interrupted: false,
             recording_kept: false,
         }
     }

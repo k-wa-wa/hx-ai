@@ -4,12 +4,11 @@ import {
   api,
   CycleReport,
   errorText,
+  HxStatus,
   InputDevice,
   LoopIteration,
   Progress,
   RecordingInfo,
-  SettingsView,
-  TargetWindow,
 } from "./api";
 import { ChatLog, ChatMessage } from "./components/ChatLog";
 import { pickDevice } from "./devices";
@@ -53,9 +52,8 @@ export default function App() {
     const v = Number(loadPref("maxIterations"));
     return LOOP_ITERATIONS.includes(v) ? v : 10;
   });
-  const [settings, setSettings] = useState<SettingsView | null>(null);
-  const [target, setTarget] = useState<TargetWindow | null>(null);
-  const [targetError, setTargetError] = useState<string | null>(null);
+  const [hx, setHx] = useState<HxStatus | null>(null);
+  const [hxError, setHxError] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
@@ -84,15 +82,24 @@ export default function App() {
     }
   }, [pushError]);
 
-  const refreshTarget = useCallback(async () => {
+  const refreshHx = useCallback(async () => {
     try {
-      setTarget(await api.findTargetWindow());
-      setTargetError(null);
+      setHx(await api.hxStatus());
+      setHxError(null);
     } catch (e) {
-      setTarget(null);
-      setTargetError(errorText(e));
+      setHx(null);
+      setHxError(errorText(e));
     }
   }, []);
+
+  const disconnectHx = useCallback(async () => {
+    try {
+      setHx(await api.disconnectHx());
+      setHxError(null);
+    } catch (e) {
+      pushError(errorText(e));
+    }
+  }, [pushError]);
 
   // 起動時
   useEffect(() => {
@@ -100,29 +107,16 @@ export default function App() {
       await refreshDevices();
       // 画面を読み込み直しても、Rust 側に残っている Undo 履歴を使えるようにする
       api.undoDepth().then(setUndoDepth).catch((e) => pushError(errorText(e)));
-      try {
-        setSettings(await api.getSettings());
-      } catch (e) {
-        pushError(errorText(e));
-      }
     })();
   }, [refreshDevices, pushError]);
 
-  // 設定ウィンドウで保存したら反映する
-  useEffect(() => {
-    const un = listen<SettingsView>("settings_changed", (e) => setSettings(e.payload));
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
-
-  // HX Edit の検出状態を定期的に見る
+  // HX Stomp の USB 接続状態を定期的に見る
   useEffect(() => {
     if (busy) return;
-    refreshTarget();
-    const t = setInterval(refreshTarget, 5000);
+    refreshHx();
+    const t = setInterval(refreshHx, 5000);
     return () => clearInterval(t);
-  }, [busy, refreshTarget, settings]);
+  }, [busy, refreshHx]);
 
   useEffect(() => {
     if (deviceId) savePref("deviceId", deviceId);
@@ -145,7 +139,6 @@ export default function App() {
       const meta: string[] = [];
       if (label) meta.push(label);
       if (r.recording_peak_dbfs !== null) meta.push(`録音ピーク ${r.recording_peak_dbfs.toFixed(1)} dBFS`);
-      if (r.rounds > 1) meta.push(`撮影 ${r.rounds} 回`);
       if (r.goal_reached) meta.push("目標に届いた");
       const hasResult = r.explanations.length > 0 || r.changes.length > 0 || r.not_restored.length > 0;
       // AI に届く前に止まったときは、エラーだけを出す
@@ -375,7 +368,15 @@ export default function App() {
               </option>
             ))}
           </select>
-          <button className="icon-btn" onClick={refreshDevices} disabled={busy} title="デバイスを再読込">
+          <button
+            className="icon-btn"
+            onClick={() => {
+              refreshDevices();
+              refreshHx();
+            }}
+            disabled={busy}
+            title="デバイスを再読込"
+          >
             ↻
           </button>
         </div>
@@ -399,11 +400,24 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div className={`target ${target ? "ok" : "ng"}`} title={targetError ?? target?.title ?? ""}>
-            {target
-              ? `${target.app_name} ${Math.round(target.rect.width)}×${Math.round(target.rect.height)}`
-              : `${settings?.effective_target_app ?? "HX Edit"} 未検出`}
+          <div
+            className={`target ${hx?.connected ? "ok" : "ng"}`}
+            title={hxError ?? (hx?.connected ? `${hx.device_name ?? "HX Stomp"}` : "USB 未接続")}
+          >
+            {hx?.connected
+              ? `${hx.device_name ?? "HX Stomp"} ${hx.session_open ? "接続中" : "待機中"}`
+              : "HX Stomp 未接続"}
           </div>
+          {hx?.session_open && (
+            <button
+              className="link"
+              onClick={disconnectHx}
+              disabled={busy}
+              title="HX Edit を使うために USB 接続を解放する"
+            >
+              USB 解放
+            </button>
+          )}
         </div>
         {mode === "auto" && (
           <div className="row small">

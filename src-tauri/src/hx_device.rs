@@ -4,13 +4,37 @@
 //! 「現在の編集バッファの読み取り」「許可されたパラメータの変更」「Undo による復元」のみに絞る。
 //! プリセットの保存 (`save`)・切り替え (`select`)・モデル変更・本体設定変更は行わない。
 
-// サイクルに組み込むまで、使われない警告を許す
-#![allow(dead_code)]
-
+// まだ使われていない補助 (disconnect 等) や将来の調整に備える
 use std::collections::{HashMap, HashSet};
 
 use hx_catalog::{Catalog, Kind as CatalogKind};
 use hx_proto::{DeviceProfile, Preset, Value as WireValue, rpc};
+use serde::Serialize;
+
+/// UI に返す HX Stomp の USB 接続状態。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HxStatus {
+    pub connected: bool,
+    pub device_name: Option<String>,
+    pub session_open: bool,
+}
+
+/// USB 上に HX Stomp 等が見えているかを調べる (セッションは張らないので HX Edit とも競合しない)。
+pub fn probe_status(session_open: bool) -> Result<HxStatus, String> {
+    let devices = hx_usb::list().map_err(|e| format!("USB デバイスを探せません: {e}"))?;
+    Ok(match devices.into_iter().next() {
+        Some(found) => HxStatus {
+            connected: true,
+            device_name: Some(found.profile.name.to_string()),
+            session_open,
+        },
+        None => HxStatus {
+            connected: false,
+            device_name: None,
+            session_open: false,
+        },
+    })
+}
 
 /// AI やワークフローから渡す 1 件の変更指示。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,16 +537,13 @@ impl UsbHxPort {
         })
     }
 
-    pub fn from_catalog(catalog: Catalog) -> Self {
-        Self {
-            catalog,
-            session: None,
-        }
-    }
-
     /// USB 接続を明示的に解放する (HX Edit を使いたいとき用)。
     pub fn disconnect(&mut self) {
         self.session = None;
+    }
+
+    pub fn is_session_open(&self) -> bool {
+        self.session.is_some()
     }
 
     fn ensure_session(&mut self) -> Result<&mut hx_usb::Session, String> {

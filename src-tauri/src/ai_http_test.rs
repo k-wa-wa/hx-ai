@@ -17,7 +17,6 @@ fn settings(base: &str) -> ResolvedSettings {
         api_base_url: base.to_string(),
         api_key: "test-key".into(),
         model: "test-model".into(),
-        target_app: "HX Edit".into(),
     }
 }
 

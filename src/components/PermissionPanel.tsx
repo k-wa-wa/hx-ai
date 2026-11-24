@@ -2,11 +2,9 @@ import { api, errorText, PermissionKind, PermissionStatus } from "../api";
 
 const LABELS: Record<PermissionKind, string> = {
   microphone: "マイク",
-  screen_recording: "画面収録",
-  accessibility: "アクセシビリティ",
 };
 
-const KINDS: PermissionKind[] = ["microphone", "screen_recording", "accessibility"];
+const KINDS: PermissionKind[] = ["microphone"];
 
 export function allGranted(s: PermissionStatus | null): boolean {
   return !!s && KINDS.every((k) => s[k] === "granted");

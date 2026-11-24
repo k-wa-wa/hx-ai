@@ -4,14 +4,11 @@ mod ai_http_test;
 #[cfg(test)]
 mod ai_live_test;
 mod audio;
-mod capture;
 mod catalog;
 mod config;
-mod geometry;
 mod hx_device;
 mod macos;
 mod permission;
-mod preset;
 mod sound;
 mod workflow;
 #[cfg(test)]
@@ -31,7 +28,6 @@ struct SettingsInput {
     /// None なら保存済みのキーを変えない。空文字なら消す。
     api_key: Option<String>,
     model: String,
-    target_app: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,7 +100,6 @@ fn save_settings(
             None => stored.api_key.clone(),
         },
         model: input.model.trim().to_string(),
-        target_app: input.target_app.trim().to_string(),
     };
     config::save(&state.settings_path, &next)?;
     *stored = next;
@@ -131,12 +126,17 @@ fn grant_permission(kind: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn find_target_window(state: State<'_, AppState>) -> Result<capture::TargetWindow, String> {
-    let settings = state.stored.lock().map_err(|e| e.to_string())?.clone();
-    let app_name = settings
-        .view(&config::app_env(config::USE_ENV))
-        .effective_target_app;
-    tauri::async_runtime::spawn_blocking(move || capture::find_target_window(&app_name))
+async fn hx_status(state: State<'_, AppState>) -> Result<hx_device::HxStatus, String> {
+    let session_open = state.is_hx_session_open();
+    tauri::async_runtime::spawn_blocking(move || hx_device::probe_status(session_open))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn disconnect_hx(state: State<'_, AppState>) -> Result<hx_device::HxStatus, String> {
+    state.disconnect_hx();
+    tauri::async_runtime::spawn_blocking(move || hx_device::probe_status(false))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -278,7 +278,8 @@ pub fn run() {
             list_input_devices,
             permission_status,
             grant_permission,
-            find_target_window,
+            hx_status,
+            disconnect_hx,
             set_reference,
             set_reference_start,
             get_reference_audio,

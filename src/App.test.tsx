@@ -3,7 +3,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { emit } from "@tauri-apps/api/event";
 import App, { MAX_RECORD_SECONDS } from "./App";
-import { GRANTED, report, SETTINGS, setupBackend } from "./test/backend";
+import { GRANTED, HX_CONNECTED, report, SETTINGS, setupBackend } from "./test/backend";
 
 
 async function renderApp() {
@@ -31,7 +31,7 @@ describe("起動時", () => {
   it("権限や API キーが無くても設定を勝手に開かない", async () => {
     const b = setupBackend({
       get_settings: () => ({ ...SETTINGS, api_key_source: "missing" }),
-      permission_status: () => ({ ...GRANTED, accessibility: "denied" }),
+      permission_status: () => ({ ...GRANTED, microphone: "denied" }),
     });
     await renderApp();
     expect(b.callsTo("open_settings_window")).toEqual([]);
@@ -44,7 +44,7 @@ describe("起動時", () => {
   });
 });
 
-describe("設定", () => {
+describe("設定・USB 状態", () => {
   it("⚙︎ で設定ウィンドウを開く", async () => {
     const b = setupBackend({ open_settings_window: () => null });
     const user = await renderApp();
@@ -53,16 +53,21 @@ describe("設定", () => {
     expect(screen.queryByLabelText("モデル")).not.toBeInTheDocument();
   });
 
-  it("設定ウィンドウで保存した設定を反映する", async () => {
-    setupBackend({
-      find_target_window: () => {
-        throw "見つかりません";
-      },
+  it("USB 未接続と接続中・解放を表示する", async () => {
+    let status = { connected: false, device_name: null as string | null, session_open: false };
+    const b = setupBackend({
+      hx_status: () => status,
+      disconnect_hx: () => ({ ...HX_CONNECTED, session_open: false }),
     });
-    await renderApp();
-    expect(await screen.findByText("HX Edit 未検出")).toBeInTheDocument();
-    await emit("settings_changed", { ...SETTINGS, effective_target_app: "HX Edit 3" });
-    expect(await screen.findByText("HX Edit 3 未検出")).toBeInTheDocument();
+    const user = await renderApp();
+    expect(await screen.findByText("HX Stomp 未接続")).toBeInTheDocument();
+
+    status = { ...HX_CONNECTED, session_open: true };
+    await user.click(screen.getByRole("button", { name: "↻" }));
+    expect(await screen.findByText("HX Stomp XL 接続中")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "USB 解放" }));
+    await waitFor(() => expect(b.callsTo("disconnect_hx")).toHaveLength(1));
+    expect(await screen.findByText("HX Stomp XL 待機中")).toBeInTheDocument();
   });
 });
 
@@ -369,12 +374,12 @@ describe("自動ループ", () => {
   it("始められないときはエラーを出し、元の状態に戻る", async () => {
     setupBackend({
       start_loop: () => {
-        throw "「HX Edit」のウィンドウが見つかりません";
+        throw "HX Stomp / HX Stomp XL が USB で見つかりません";
       },
     });
     const user = await renderAuto();
     await user.click(screen.getByRole("button", { name: "▶ 自動ループを始める" }));
-    expect(await screen.findByText(/ウィンドウが見つかりません/)).toBeInTheDocument();
+    expect(await screen.findByText(/USB で見つかりません/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "▶ 自動ループを始める" })).toBeEnabled();
   });
 

@@ -4,10 +4,10 @@ import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import type { InvokeArgs } from "@tauri-apps/api/core";
 import type {
   CycleReport,
+  HxStatus,
   InputDevice,
   PermissionStatus,
   SettingsView,
-  TargetWindow,
 } from "../api";
 
 export const DEVICES: InputDevice[] = [
@@ -17,24 +17,19 @@ export const DEVICES: InputDevice[] = [
 
 export const GRANTED: PermissionStatus = {
   microphone: "granted",
-  screen_recording: "granted",
-  accessibility: "granted",
 };
 
 export const SETTINGS: SettingsView = {
-  stored: { api_base_url: "", model: "", target_app: "", has_api_key: false },
+  stored: { api_base_url: "", model: "", has_api_key: false },
   effective_base_url: "https://example.test/v1/",
   effective_model: "gemini-3.8-flash",
-  effective_target_app: "HX Edit",
   api_key_source: "env",
 };
 
-export const WINDOW: TargetWindow = {
-  window_id: 1,
-  pid: 2,
-  app_name: "HX Edit",
-  title: "HX Edit",
-  rect: { x: 0, y: 0, width: 1200, height: 800 },
+export const HX_CONNECTED: HxStatus = {
+  connected: true,
+  device_name: "HX Stomp XL",
+  session_open: false,
 };
 
 export function report(overrides: Partial<CycleReport> = {}): CycleReport {
@@ -43,11 +38,9 @@ export function report(overrides: Partial<CycleReport> = {}): CycleReport {
     changes: [],
     error: null,
     recording_peak_dbfs: -12.3,
-    rounds: 1,
     undo_depth: 0,
     not_restored: [],
     goal_reached: false,
-    interrupted: false,
     recording_kept: false,
     ...overrides,
   };
@@ -69,7 +62,8 @@ export function setupBackend(handlers: Record<string, Handler> = {}): Backend {
     get_settings: () => SETTINGS,
     list_input_devices: () => DEVICES,
     permission_status: () => GRANTED,
-    find_target_window: () => WINDOW,
+    hx_status: () => HX_CONNECTED,
+    disconnect_hx: () => HX_CONNECTED,
     undo_depth: () => 0,
   };
   const all = { ...defaults, ...handlers };

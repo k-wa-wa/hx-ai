@@ -12,7 +12,6 @@ export function SettingsPanel({
 }) {
   const [baseUrl, setBaseUrl] = useState("");
   const [model, setModel] = useState("");
-  const [targetApp, setTargetApp] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [clearKey, setClearKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -22,7 +21,6 @@ export function SettingsPanel({
     if (!view) return;
     setBaseUrl(view.stored.api_base_url);
     setModel(view.stored.model);
-    setTargetApp(view.stored.target_app);
   }, [view]);
 
   const save = async () => {
@@ -32,7 +30,6 @@ export function SettingsPanel({
         apiBaseUrl: baseUrl,
         apiKey: clearKey ? "" : apiKey.trim() ? apiKey : null,
         model,
-        targetApp,
       });
       setApiKey("");
       setClearKey(false);
@@ -85,15 +82,6 @@ export function SettingsPanel({
           保存したキーを消す
         </label>
       )}
-      <label className="field">
-        <span>操作するアプリ名</span>
-        <input
-          value={targetApp}
-          placeholder={view?.effective_target_app}
-          onChange={(e) => setTargetApp(e.target.value)}
-          spellCheck={false}
-        />
-      </label>
       <div className="row">
         <button className="primary" onClick={save} disabled={saving}>
           保存
