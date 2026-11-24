@@ -3,7 +3,8 @@
 //! cargo test ai_live -- --ignored --nocapture
 //!
 //! 入力の画面は scripts/make_mock_screenshot.swift で描いた HX Edit 風の模擬画面
-//! (1200×800 ポイント) である。数値欄の中心は x = 100 + 140 * i, y = 712 ポイントにある。
+//! (1000×604 ポイント、実物の HX Edit 3.x に合わせた配置) である。パラメータ i 行目の
+//! 数値の中心は x = 956, y = 194 + 25.7 * i ポイント (Treble は 3 行目)。
 
 use crate::ai::{self, ActionKind, AiResponse, Purpose, RequestInput, RestoreTarget};
 use crate::config::{self, StoredSettings};
@@ -25,10 +26,14 @@ fn screenshot() -> (Vec<u8>, (u32, u32)) {
 }
 
 /// 模擬画面の要素の中心 (正規化座標)。
-const TREBLE_VALUE: (f64, f64) = (520.0 / 1200.0 * 1000.0, 712.0 / 800.0 * 1000.0);
-const DELAY_BLOCK: (f64, f64) = (696.0 / 1200.0 * 1000.0, 152.0 / 800.0 * 1000.0);
+const TREBLE_VALUE: (f64, f64) = (
+    956.0 / 1000.0 * 1000.0,
+    (194.0 + 25.7 * 3.0) / 604.0 * 1000.0,
+);
+const DELAY_BLOCK: (f64, f64) = (800.0 / 1000.0 * 1000.0, 70.0 / 604.0 * 1000.0);
 
-/// 正解からこの距離 (正規化座標) 以内なら当たりとみなす。数値欄の半幅は約 28 である。
+/// 正解からこの距離 (正規化座標) 以内なら当たりとみなす。縦は隣の行 (25.7 ポイント = 約 43) に
+/// 届かない大きさにする。
 const TOLERANCE: f64 = 30.0;
 
 /// 高域の強いのこぎり波 (耳に痛い音の代わり)。アプリと同じく 16kHz モノラルにして送る。
