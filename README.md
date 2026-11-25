@@ -9,10 +9,10 @@ Tauri v2 (Rust) + React + TypeScript で作り、AI は OpenAI 互換の Chat Co
 ## 使い方
 
 1. `/Applications/Line6/HX Edit.app` をインストールしておく (起動する必要はない。モデル定義の参照に使う)。`HX AI` が USB セッションを保持している間は HX Edit を閉じておく (USB の排他接続のため)。HX Edit を使いたいときは画面上部の「USB 解放」を押す。
-2. `npm install` してから `npm run tauri dev` で起動する。
+2. `npm install` してから `npm run tauri dev` で起動する。HX Stomp が接続されていれば左ペインに現在のプリセット・シグナルチェーン・全ブロックのパラメータ一覧を表示し、ブロックを選ぶとそのブロックだけの設定へ絞り込める。
 3. 右上の ⚙︎ で設定ウィンドウを開き、API キーを入れて保存する。
 4. マイクの権限は、使うときに足りなければ許可を求める (ダイアログかシステム設定が開く)。許可してから、もう一度実行する。前もって許可するときは、設定ウィンドウの「macOS の権限」の「許可する」を押す。
-5. 手動モードか自動ループを選ぶ (下)。
+5. 右ペインで手動モードか自動ループを選ぶ。
 6. 結果が気に入らなければ「戻す」を押す。1 回の送信 (自動ループでは 1 回の調整) ごとに、変更前の値へ直接戻せる。
 
 目標の音 (WAV / MP3 / M4A) をドロップすると、リファレンスとして AI に渡す。AI に送るのは 20 秒の区間だけで、プレビューを再生して「再生位置から使う」を押すと区間を選び直せる。
@@ -109,7 +109,8 @@ Undo 履歴は最大 20 回分を保持する。
 ```sh
 npm install
 git config core.hooksPath .githooks    # コミット前に npm run check を走らせる (clone ごとに 1 回)
-npm run check                          # 型検査・整形・lint・テストをまとめて走らせる
+npm run check                          # 普段の検査 (型検査・整形・lint・単体テスト。AI 呼び出しと実機テストは除外)
+npm run check:nightly                  # 時間があるときの Nightly 検査 (通常検査 + 本番 .app ビルド + cargo mutants)
 npm run tauri dev                      # 開発起動
 npm run build                          # フロントエンドの型検査とビルド
 (cd src-tauri && cargo test)           # 単体テスト
@@ -117,11 +118,11 @@ npm run build                          # フロントエンドの型検査とビ
 npm run tauri build -- --bundles app   # .app を作る
 ```
 
-テストの置き場所と変異テスト (cargo mutants) の使い方は [AGENTS.md](AGENTS.md) にある。
+時間のかかるテスト (リリースビルドや `cargo mutants`) は `npm run check:nightly` にまとめてあり、時間があるときだけ実行する。テストの置き場所と変異テストの詳細は [AGENTS.md](AGENTS.md) にある。
 
 ### AI の結合テスト
 
-実際の API を呼ぶ (課金が発生する) ので既定では走らない。
+実際の API を呼ぶ (課金が発生する) ため、普段のテスト (`npm run check`) や Nightly ビルド (`npm run check:nightly`) からは除外してあり、特別な指示があるときだけ手動で走らせる。
 
 ```sh
 cd src-tauri && cargo test ai_live -- --ignored --nocapture --test-threads=1

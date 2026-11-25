@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "check": "scripts/check.sh",
+    "check:nightly": "scripts/check-nightly.sh",
     "test": "vitest run"
   },
   "dependencies": {

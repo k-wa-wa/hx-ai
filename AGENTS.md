@@ -30,13 +30,19 @@
 
 OS や外部デバイスに触る処理 (`macos.rs`・`audio.rs`・`hx_device.rs` の `UsbHxPort` など) は薄く保ち、判断は純粋関数に切り出してテストする。
 
+## 普段の検査と Nightly ビルド
+
+- 変更時・コミット前は `npm run check` (`scripts/check.sh`) を通す。`#[ignore]` テスト (実機 USB と AI 呼び出し) や変異テストはここには含めない。
+- 時間があるとき・夜間や大きな変更の後は `npm run check:nightly` (`scripts/check-nightly.sh`) を走らせる。通常の検査に加えてフロントエンド本番ビルド・`.app` リリースビルド・`cargo mutants -j 4` をまとめて検証する。
+
 ## 変異テスト
 
 テストが誤りに気づけるかは `cargo mutants` で測る (実装をわざと壊し、テストが落ちるかを見る)。
 
 ```sh
 cargo install cargo-mutants --locked
-cd src-tauri && cargo mutants -j 4                    # すべて (20 分ほど)
+npm run check:nightly                                 # 通常検査 + リリースビルド + cargo mutants 全体 (20 分ほど)
+cd src-tauri && cargo mutants -j 4                    # 変異テストのみ全体
 cd src-tauri && cargo mutants -j 4 --in-diff <(git diff --relative <基準のコミット> -- .)  # 変えた所だけ
 ```
 
@@ -46,4 +52,4 @@ cd src-tauri && cargo mutants -j 4 --in-diff <(git diff --relative <基準のコ
 
 ## AI の結合テスト
 
-実際の API を呼ぶテスト (`cargo test ai_live -- --ignored`) は課金が発生するので、必要なときだけ走らせる。プロンプトやスキーマを変えたときは走らせる。
+実際の API を呼ぶテスト (`cargo test ai_live -- --ignored`) は課金と外部通信が発生するため、**普段のテスト (`npm run check`) および Nightly ビルド (`npm run check:nightly`) からは除外する**。特別な指示があるときや、プロンプト・スキーマを変えたときのみ手動で走らせる。
