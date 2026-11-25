@@ -112,6 +112,13 @@ pub struct ParamView {
     pub lock_reason: Option<String>,
 }
 
+/// Amp+Cab ブロック内のキャビネット情報 (参照用)。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairedCabView {
+    pub name: String,
+    pub params: Vec<ParamView>,
+}
+
 /// チェーン上の 1 ブロック。
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockView {
@@ -126,6 +133,8 @@ pub struct BlockView {
     pub locked: bool,
     pub lock_reason: Option<String>,
     pub params: Vec<ParamView>,
+    /// Amp+Cab ブロックに紐づく Cab の構造化情報。
+    pub paired_cab: Option<PairedCabView>,
     /// Amp+Cab ブロックの Cab 側など、読み取り参考用の注記。
     pub readonly_notes: Vec<String>,
 }
@@ -155,6 +164,14 @@ pub struct ParamUiView {
     pub locked: bool,
 }
 
+/// 画面表示向けのペア Cab 情報。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedCabUiView {
+    pub name: String,
+    pub params: Vec<ParamUiView>,
+}
+
 /// 画面表示向けのブロック 1 つ。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -167,6 +184,7 @@ pub struct BlockUiView {
     pub enabled: bool,
     pub locked: bool,
     pub lock_reason: Option<String>,
+    pub paired_cab: Option<PairedCabUiView>,
     pub readonly_notes: Vec<String>,
     pub params: Vec<ParamUiView>,
 }
@@ -181,6 +199,22 @@ pub struct ChainView {
     pub snapshots: Vec<String>,
     pub free_block_slots: usize,
     pub blocks: Vec<BlockUiView>,
+}
+
+fn param_to_ui_view(p: &ParamView) -> ParamUiView {
+    let (kind, min, max) = match &p.kind {
+        ParamKindView::Number { min, max } => ("number", Some(min.clone()), Some(max.clone())),
+        ParamKindView::Choice { .. } => ("choice", None, None),
+        ParamKindView::ReadOnly => ("readonly", None, None),
+    };
+    ParamUiView {
+        name: p.name.clone(),
+        value: p.value.clone(),
+        kind,
+        min,
+        max,
+        locked: p.locked,
+    }
 }
 
 /// 内部スナップショットをフロントエンド向けの JSON 表現に変換する。
@@ -203,28 +237,12 @@ pub fn to_chain_view(snap: &ChainSnapshot) -> ChainView {
                 enabled: b.enabled,
                 locked: b.locked,
                 lock_reason: b.lock_reason.clone(),
+                paired_cab: b.paired_cab.as_ref().map(|c| PairedCabUiView {
+                    name: c.name.clone(),
+                    params: c.params.iter().map(param_to_ui_view).collect(),
+                }),
                 readonly_notes: b.readonly_notes.clone(),
-                params: b
-                    .params
-                    .iter()
-                    .map(|p| {
-                        let (kind, min, max) = match &p.kind {
-                            ParamKindView::Number { min, max } => {
-                                ("number", Some(min.clone()), Some(max.clone()))
-                            }
-                            ParamKindView::Choice { .. } => ("choice", None, None),
-                            ParamKindView::ReadOnly => ("readonly", None, None),
-                        };
-                        ParamUiView {
-                            name: p.name.clone(),
-                            value: p.value.clone(),
-                            kind,
-                            min,
-                            max,
-                            locked: p.locked,
-                        }
-                    })
-                    .collect(),
+                params: b.params.iter().map(param_to_ui_view).collect(),
             })
             .collect(),
     }
@@ -375,27 +393,32 @@ pub fn snapshot_from_preset(
                 .collect();
 
             let mut readonly_notes = Vec::new();
-            if let Some(cab_model) = block.paired {
+            let paired_cab = block.paired.map(|cab_model| {
                 let cab_name = catalog
                     .model_number(cab_model)
                     .map(|m| m.name.clone())
                     .unwrap_or_else(|| format!("model {cab_model}"));
-                let cab_params: Vec<String> = block
+                let cab_views: Vec<ParamView> = block
                     .paired_values
                     .iter()
                     .enumerate()
-                    .filter_map(|(idx, &val)| {
-                        catalog
-                            .param(cab_model, idx)
-                            .map(|p| format!("{}={}", p.name, catalog.format(p, val)))
-                    })
+                    .filter(|(idx, _)| catalog.param(cab_model, *idx).is_some())
+                    .map(|(idx, &val)| build_param_view(catalog, cab_model, idx, val, None))
                     .collect();
-                if cab_params.is_empty() {
+                if cab_views.is_empty() {
                     readonly_notes.push(format!("Cab ({cab_name})"));
                 } else {
-                    readonly_notes.push(format!("Cab ({cab_name}): {}", cab_params.join(", ")));
+                    let summary: Vec<String> = cab_views
+                        .iter()
+                        .map(|p| format!("{}={}", p.name, p.value))
+                        .collect();
+                    readonly_notes.push(format!("Cab ({cab_name}): {}", summary.join(", ")));
                 }
-            }
+                PairedCabView {
+                    name: cab_name,
+                    params: cab_views,
+                }
+            });
 
             let lock_reason = locked_blocks.get(&slot).cloned();
             let locked = lock_reason.is_some();
@@ -428,6 +451,7 @@ pub fn snapshot_from_preset(
                 locked,
                 lock_reason,
                 params,
+                paired_cab,
                 readonly_notes,
             }
         })
@@ -1628,6 +1652,17 @@ fn format_usb_error(err: hx_usb::Error) -> String {
     }
 }
 
+/// 機器の表示仕様に合わせてプリセット番号を「28B」のような表記にする。
+/// hx-proto の HX_STOMP_XL は presets_per_bank が 3 になっているため 4 として扱う。
+pub fn format_slot_label(profile: &hx_proto::DeviceProfile, index: i64) -> String {
+    let per_bank = if profile.product_id == hx_proto::HX_STOMP_XL.product_id {
+        4
+    } else {
+        profile.presets_per_bank
+    };
+    rpc::slot_label_for(index, per_bank)
+}
+
 impl HxPort for UsbHxPort {
     fn catalog(&self) -> &Catalog {
         &self.catalog
@@ -1638,7 +1673,7 @@ impl HxPort for UsbHxPort {
         let (profile, (slot_label, preset_name)) = self.call_session(|s| {
             let profile = s.profile;
             let (_, index, name) = s.preset_info()?;
-            Ok((profile, (profile.slot_label(index), name)))
+            Ok((profile, (format_slot_label(&profile, index), name)))
         })?;
 
         Ok(snapshot_from_preset(
@@ -2131,6 +2166,7 @@ mod tests {
                 locked: false,
                 lock_reason: None,
                 params,
+                paired_cab: None,
                 readonly_notes: vec![],
             }],
         }
@@ -2813,6 +2849,11 @@ mod tests {
         // slot 2 が空いているので WritePreset は飛ばず set_model(2, 3, Some(4)) のみ
         assert_eq!(port.events, vec![FakeEvent::Model(2, 3, Some(4))]);
         assert_eq!(port.snapshot.blocks[1].category, "Amp+Cab");
+        let view = to_chain_view(&port.snapshot);
+        assert_eq!(
+            view.blocks[1].paired_cab.as_ref().unwrap().name,
+            "1x12 US Deluxe"
+        );
         assert_eq!(
             outcome.steps,
             vec![AppliedStep::Added {
@@ -3100,6 +3141,13 @@ mod tests {
         assert_eq!(view.blocks[0].params[0].min.as_deref(), Some("0.0"));
         assert_eq!(view.blocks[0].params[0].max.as_deref(), Some("10.0"));
         assert_eq!(view.blocks[0].params[1].kind, "choice");
+        assert!(view.blocks[0].paired_cab.is_none());
+    }
+
+    #[test]
+    fn format_slot_label_uses_four_presets_per_bank_for_hx_stomp_xl() {
+        assert_eq!(format_slot_label(&hx_proto::HX_STOMP_XL, 109), "28B");
+        assert_eq!(format_slot_label(&hx_proto::HX_STOMP, 109), "37B");
     }
 
     fn verify_usb_round_trip(idle_wait: Duration) {

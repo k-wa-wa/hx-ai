@@ -48,6 +48,11 @@ export interface ParamUiView {
   locked: boolean;
 }
 
+export interface PairedCabUiView {
+  name: string;
+  params: ParamUiView[];
+}
+
 export interface BlockUiView {
   id: string;
   slot: number;
@@ -57,6 +62,7 @@ export interface BlockUiView {
   enabled: boolean;
   locked: boolean;
   lockReason: string | null;
+  pairedCab?: PairedCabUiView | null;
   readonlyNotes: string[];
   params: ParamUiView[];
 }

@@ -69,6 +69,28 @@ describe("設定・USB 状態", () => {
     await waitFor(() => expect(b.callsTo("disconnect_hx")).toHaveLength(1));
     expect(await screen.findByText("HX Stomp XL 待機中")).toBeInTheDocument();
   });
+
+  it("Mac マイクはマイクアイコンで出し、HX 接続時は入力を HX へ切り替える", async () => {
+    let devices = [{ id: "coreaudio:builtin", name: "MacBook Pro のマイク", is_default: true }];
+    let status = { connected: false, device_name: null as string | null, session_open: false };
+    setupBackend({
+      list_input_devices: () => devices,
+      hx_status: () => status,
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByRole("option", { name: "🎙 MacBook Pro のマイク" })).toBeInTheDocument();
+    expect(screen.getByTitle("オーディオ入力")).toHaveValue("coreaudio:builtin");
+
+    devices = [
+      { id: "coreaudio:builtin", name: "MacBook Pro のマイク", is_default: true },
+      { id: "coreaudio:stomp", name: "HX Stomp XL", is_default: false },
+    ];
+    status = { ...HX_CONNECTED, session_open: true };
+    await user.click(screen.getByRole("button", { name: "↻" }));
+    await waitFor(() => expect(screen.getByTitle("オーディオ入力")).toHaveValue("coreaudio:stomp"));
+    expect(screen.getByRole("option", { name: "🎸 HX Stomp XL" })).toBeInTheDocument();
+  });
 });
 
 const SEND = "送信";
@@ -383,10 +405,19 @@ describe("自動ループ", () => {
     expect(screen.getByRole("button", { name: "▶ 自動ループを始める" })).toBeEnabled();
   });
 
-  it("モードを覚えておく", async () => {
+  it("モードを覚えておき、入力欄の placeholder に使い方を出す", async () => {
     setupBackend();
-    await renderAuto();
+    const user = await renderApp();
+    expect(screen.getByRole("textbox")).toHaveAttribute(
+      "placeholder",
+      expect.stringContaining("目標音源のドロップも可"),
+    );
+    await user.click(screen.getByRole("radio", { name: "自動ループ" }));
     expect(localStorage.getItem("mode")).toBe("auto");
+    expect(screen.getByRole("textbox")).toHaveAttribute(
+      "placeholder",
+      expect.stringContaining("ルーパー"),
+    );
   });
 });
 
@@ -530,6 +561,12 @@ describe("エフェクトチェーン一覧", () => {
         enabled: true,
         locked: false,
         lockReason: null,
+        pairedCab: {
+          name: "2x12 Jazz Rivet",
+          params: [
+            { name: "Distance", value: '1.00 "', kind: "number", min: '1.00 "', max: '12.00 "', locked: false },
+          ],
+        },
         readonlyNotes: [],
         params: [
           { name: "Gain 1", value: "3.4", kind: "number", min: "0.0", max: "10.0", locked: false },
@@ -557,6 +594,9 @@ describe("エフェクトチェーン一覧", () => {
     expect(await screen.findByText("Studio Crunch")).toBeInTheDocument();
     expect(screen.getByText("14B")).toBeInTheDocument();
     expect(screen.getByText("118.5 BPM")).toBeInTheDocument();
+    expect(screen.queryByText(/空き .* 枠/)).not.toBeInTheDocument();
+    expect(screen.getByText("2x12 Jazz Rivet")).toBeInTheDocument();
+    expect(screen.getByText("Distance")).toBeInTheDocument();
     expect(screen.getByText("Gain 1")).toBeInTheDocument();
     expect(screen.getByText("3.4")).toBeInTheDocument();
     expect(screen.getByText("Mix")).toBeInTheDocument();
@@ -618,5 +658,20 @@ describe("エフェクトチェーン一覧", () => {
 
     expect(await screen.findByText("Tone Sovereign · Gain 1")).toBeInTheDocument();
     expect(screen.getByText("変更")).toBeInTheDocument();
+  });
+
+  it("中央の境界線でペイン幅を調整でき、ダブルクリックで初期幅に戻せる", async () => {
+    setupBackend();
+    const user = await renderApp();
+    const divider = screen.getByRole("separator", { name: "ペイン幅の調整" });
+    expect(divider).toHaveAttribute("aria-valuenow", "440");
+
+    divider.focus();
+    await user.keyboard("{ArrowLeft}");
+    expect(divider).toHaveAttribute("aria-valuenow", "464");
+    expect(localStorage.getItem("assistantWidth")).toBe("464");
+
+    await user.dblClick(divider);
+    expect(divider).toHaveAttribute("aria-valuenow", "440");
   });
 });

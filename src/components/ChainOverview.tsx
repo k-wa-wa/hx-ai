@@ -34,6 +34,44 @@ function normKey(s: string): string {
   return s.trim().toLowerCase();
 }
 
+function ParamGrid({
+  params,
+  changedParams,
+}: {
+  params: ParamUiView[];
+  changedParams?: Map<string, DoneAction>;
+}) {
+  return (
+    <div className="param-grid">
+      {params.map((p) => {
+        const pct = gaugePercent(p);
+        const change = changedParams?.get(normKey(p.name));
+        return (
+          <div
+            key={p.name}
+            className={`param-cell ${p.locked ? "locked" : ""} ${change ? "changed" : ""}`}
+            title={change ? `${change.previous_value} → ${change.value}` : undefined}
+          >
+            <div className="param-row">
+              <span className="param-name" title={p.name}>
+                {change && <span className="param-dot" aria-hidden="true" />}
+                {p.name}
+                {p.locked ? " (固定)" : ""}
+              </span>
+              <span className="param-value">{p.value}</span>
+            </div>
+            {pct !== null && (
+              <div className="param-meter" aria-hidden="true">
+                <div className="param-meter-fill" style={{ width: `${pct}%` }} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function BlockTile({
   block,
   selected,
@@ -107,45 +145,30 @@ function BlockCard({
       </header>
 
       {block.params.length > 0 ? (
-        <div className="param-grid">
-          {block.params.map((p) => {
-            const pct = gaugePercent(p);
-            const change = changedParams?.get(normKey(p.name));
-            return (
-              <div
-                key={p.name}
-                className={`param-cell ${p.locked ? "locked" : ""} ${change ? "changed" : ""}`}
-                title={change ? `${change.previous_value} → ${change.value}` : undefined}
-              >
-                <div className="param-row">
-                  <span className="param-name" title={p.name}>
-                    {change && <span className="param-dot" aria-hidden="true" />}
-                    {p.name}
-                    {p.locked ? " (固定)" : ""}
-                  </span>
-                  <span className="param-value">{p.value}</span>
-                </div>
-                {pct !== null && (
-                  <div className="param-meter" aria-hidden="true">
-                    <div className="param-meter-fill" style={{ width: `${pct}%` }} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <ParamGrid params={block.params} changedParams={changedParams} />
       ) : (
         <div className="muted small">調整可能なパラメータはありません</div>
       )}
 
-      {block.readonlyNotes.length > 0 && (
-        <div className="block-notes">
-          {block.readonlyNotes.map((note, i) => (
-            <div key={i} className="block-note">
-              {note}
-            </div>
-          ))}
+      {block.pairedCab ? (
+        <div className="paired-cab">
+          <div className="paired-cab-head">
+            <span className="block-cat-pill cab">Cab</span>
+            <span className="paired-cab-name">{block.pairedCab.name}</span>
+            <span className="muted small">参照のみ</span>
+          </div>
+          {block.pairedCab.params.length > 0 && <ParamGrid params={block.pairedCab.params} />}
         </div>
+      ) : (
+        block.readonlyNotes.length > 0 && (
+          <div className="block-notes">
+            {block.readonlyNotes.map((note, i) => (
+              <div key={i} className="block-note">
+                {note}
+              </div>
+            ))}
+          </div>
+        )
       )}
     </article>
   );
@@ -197,7 +220,6 @@ export function ChainOverview({
               {chain.tempo !== null && (
                 <span className="preset-pill">{chain.tempo.toFixed(1)} BPM</span>
               )}
-              <span className="preset-pill muted">空き {chain.freeBlockSlots} 枠</span>
               {staleNotice && <span className="preset-pill stale">{staleNotice}</span>}
             </>
           ) : (

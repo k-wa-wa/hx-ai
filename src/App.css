@@ -186,18 +186,49 @@ button:not(:disabled):hover {
   color: var(--ng);
 }
 
-/* 2 カラムのメイン領域 (全画面・ゆったり配置) */
+/* 2 カラムのメイン領域 (全画面・ドラッグで幅調整可) */
 .workspace {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(360px, 430px);
+  grid-template-columns: minmax(0, 1fr) 6px var(--assistant-width, 440px);
+}
+.workspace.resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+.pane-divider {
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  outline: none;
+}
+.pane-divider::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: var(--border);
+  transition: background 0.14s, width 0.14s;
+}
+.pane-divider:hover::after,
+.pane-divider:focus-visible::after,
+.pane-divider.active::after {
+  width: 2px;
+  background: var(--border-strong);
 }
 
 @media (max-width: 900px) {
   .workspace {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(280px, 48%) minmax(0, 1fr);
+  }
+  .pane-divider {
+    display: none;
   }
 }
 
@@ -207,13 +238,11 @@ button:not(:disabled):hover {
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  border-right: 1px solid var(--border);
   background: radial-gradient(circle at top left, rgba(255, 255, 255, 0.025), transparent 55%),
     var(--bg);
 }
 @media (max-width: 900px) {
   .chain-pane {
-    border-right: none;
     border-bottom: 1px solid var(--border);
   }
 }
@@ -569,6 +598,28 @@ button:not(:disabled):hover {
   background: #5b606e;
 }
 
+.paired-cab {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.paired-cab-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.paired-cab-name {
+  font-size: 12px;
+  font-weight: 600;
+}
+.block-cat-pill.cab {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
 .block-notes {
   padding-top: var(--space-2);
   border-top: 1px solid var(--border);
@@ -617,13 +668,6 @@ button:not(:disabled):hover {
   min-height: 0;
   min-width: 0;
   background: var(--bg);
-}
-
-.ref-bar {
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border);
-  background: rgba(26, 28, 32, 0.5);
-  flex: none;
 }
 
 /* 設定ウィンドウ */
@@ -698,14 +742,32 @@ button:not(:disabled):hover {
 
 /* 録音の設定とリファレンス */
 .controls-top {
-  flex-wrap: wrap;
+  min-height: 30px;
   justify-content: space-between;
+  gap: var(--space-2);
 }
 .loop-options {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
+.segmented.compact button {
+  padding: 4px 7px;
+}
+.recording-inline {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
 }
 .segmented {
   display: flex;
@@ -729,10 +791,11 @@ button:not(:disabled):hover {
 
 .drop {
   border: 1px dashed #454954;
-  border-radius: 9px;
-  padding: 12px;
+  border-radius: 8px;
+  padding: 8px 10px;
   text-align: center;
   color: var(--muted);
+  font-size: 12px;
   transition: border-color 0.15s, background 0.15s;
 }
 .drop.hover {
@@ -746,8 +809,8 @@ button:not(:disabled):hover {
   color: var(--text);
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  background: var(--panel);
+  gap: 6px;
+  background: var(--bg);
 }
 .drop-head {
   display: flex;
@@ -867,6 +930,10 @@ button:not(:disabled):hover {
   flex-direction: column;
   gap: var(--space-2);
   flex: none;
+}
+.composer.drag-over textarea {
+  border-color: var(--border-strong);
+  background: var(--panel-2);
 }
 .composer textarea {
   resize: none;

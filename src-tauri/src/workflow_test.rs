@@ -87,6 +87,7 @@ fn sample_chain() -> ChainSnapshot {
                     lock_reason: None,
                 },
             ],
+            paired_cab: None,
             readonly_notes: vec![],
         }],
     }
@@ -589,6 +590,7 @@ async fn add_block_triggers_followup_to_set_initial_params_and_undoes_as_one_sna
         locked: false,
         lock_reason: None,
         params: vec![],
+        paired_cab: None,
         readonly_notes: vec![],
     });
 

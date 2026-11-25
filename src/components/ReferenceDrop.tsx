@@ -8,19 +8,25 @@ export function formatTime(seconds: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** リファレンス音源のドロップ先。ウィンドウのどこに落としても受け付ける。 */
+/** リファレンス音源のドロップ受け付けと読み込み済みプレイヤー表示。 */
 export function ReferenceDrop({
   disabled,
   onError,
+  onHoverChange,
 }: {
   disabled: boolean;
   onError: (msg: string) => void;
+  onHoverChange?: (hover: boolean) => void;
 }) {
   const [info, setInfo] = useState<ReferenceInfo | null>(null);
   const [url, setUrl] = useState<string | null>(null);
   const [hover, setHover] = useState(false);
   const [loading, setLoading] = useState(false);
   const audio = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    onHoverChange?.(hover);
+  }, [hover, onHoverChange]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -101,9 +107,12 @@ export function ReferenceDrop({
       </div>
     );
   }
-  return (
-    <div className={`drop ${hover ? "hover" : ""}`}>
-      {loading ? "読み込み中…" : "リファレンス (WAV / MP3 / M4A) をドロップ"}
-    </div>
-  );
+
+  if (loading) {
+    return <div className="drop loading">リファレンスを読み込み中…</div>;
+  }
+  if (hover) {
+    return <div className="drop hover">ここにドロップして目標音源をセット (WAV / MP3 / M4A)</div>;
+  }
+  return null;
 }

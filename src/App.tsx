@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
@@ -14,7 +14,7 @@ import {
 } from "./api";
 import { ChainOverview } from "./components/ChainOverview";
 import { ChatLog, ChatMessage } from "./components/ChatLog";
-import { pickDevice } from "./devices";
+import { isHxAudioDevice, pickDevice } from "./devices";
 import { formatTime, ReferenceDrop } from "./components/ReferenceDrop";
 import "./App.css";
 
@@ -22,6 +22,16 @@ import "./App.css";
 export const MAX_RECORD_SECONDS = 30;
 const LOOP_SECONDS = [3, 5, 10];
 const LOOP_ITERATIONS = [5, 10, 20];
+const DEFAULT_ASSISTANT_WIDTH = 440;
+const MIN_ASSISTANT_WIDTH = 380;
+const MAX_ASSISTANT_WIDTH = 760;
+
+function clampAssistantWidth(px: number, containerWidth = window.innerWidth): number {
+  const byContainer =
+    containerWidth > 0 ? Math.max(MIN_ASSISTANT_WIDTH, containerWidth - 380) : MAX_ASSISTANT_WIDTH;
+  const max = Math.min(MAX_ASSISTANT_WIDTH, byContainer);
+  return Math.round(Math.max(MIN_ASSISTANT_WIDTH, Math.min(max, px)));
+}
 
 type Mode = "manual" | "auto";
 
@@ -62,7 +72,15 @@ export default function App() {
   const [chainError, setChainError] = useState<string | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [recentChanges, setRecentChanges] = useState<DoneAction[]>([]);
+  const [dropHover, setDropHover] = useState(false);
+  const [assistantWidth, setAssistantWidth] = useState<number>(() => {
+    const saved = Number(loadPref("assistantWidth"));
+    return Number.isFinite(saved) && saved > 0 ? clampAssistantWidth(saved) : DEFAULT_ASSISTANT_WIDTH;
+  });
+  const [resizing, setResizing] = useState(false);
+  const workspaceRef = useRef<HTMLElement>(null);
   const autoLoadedChainRef = useRef(false);
+  const wasConnectedRef = useRef<boolean | null>(null);
   const [instruction, setInstruction] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
@@ -81,15 +99,18 @@ export default function App() {
   }, []);
   const pushError = useCallback((text: string) => push({ role: "error", text }), [push]);
 
-  const refreshDevices = useCallback(async () => {
-    try {
-      const list = await api.listInputDevices();
-      setDevices(list);
-      setDeviceId((cur) => pickDevice(list, cur ?? loadPref("deviceId")));
-    } catch (e) {
-      pushError(errorText(e));
-    }
-  }, [pushError]);
+  const refreshDevices = useCallback(
+    async (preferHx = false) => {
+      try {
+        const list = await api.listInputDevices();
+        setDevices(list);
+        setDeviceId((cur) => pickDevice(list, cur ?? loadPref("deviceId"), preferHx));
+      } catch (e) {
+        pushError(errorText(e));
+      }
+    },
+    [pushError],
+  );
 
   const refreshChain = useCallback(async () => {
     if (busy) return;
@@ -108,19 +129,26 @@ export default function App() {
   const refreshHx = useCallback(async () => {
     try {
       const status = await api.hxStatus();
+      const prevConnected = wasConnectedRef.current;
+      wasConnectedRef.current = status.connected;
       setHx(status);
       setHxError(null);
       if (!status.connected) {
         autoLoadedChainRef.current = false;
-      } else if (!autoLoadedChainRef.current) {
-        autoLoadedChainRef.current = true;
-        refreshChain();
+      } else {
+        if (prevConnected === false) {
+          refreshDevices(true);
+        }
+        if (!autoLoadedChainRef.current) {
+          autoLoadedChainRef.current = true;
+          refreshChain();
+        }
       }
     } catch (e) {
       setHx(null);
       setHxError(errorText(e));
     }
-  }, [refreshChain]);
+  }, [refreshChain, refreshDevices]);
 
   const disconnectHx = useCallback(async () => {
     try {
@@ -148,12 +176,38 @@ export default function App() {
     return () => clearInterval(t);
   }, [busy, refreshHx]);
 
-  useEffect(() => {
-    if (deviceId) savePref("deviceId", deviceId);
-  }, [deviceId]);
   useEffect(() => savePref("seconds", String(seconds)), [seconds]);
   useEffect(() => savePref("maxIterations", String(maxIterations)), [maxIterations]);
   useEffect(() => savePref("mode", mode), [mode]);
+  useEffect(() => savePref("assistantWidth", String(assistantWidth)), [assistantWidth]);
+
+  useEffect(() => {
+    const onResize = () => setAssistantWidth((w) => clampAssistantWidth(w));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  const startResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    setResizing(true);
+    const update = (clientX: number) => {
+      const rect = workspaceRef.current?.getBoundingClientRect();
+      const rightEdge = rect && rect.width > 0 ? rect.right : window.innerWidth;
+      const widthBasis = rect && rect.width > 0 ? rect.width : window.innerWidth;
+      setAssistantWidth(clampAssistantWidth(rightEdge - clientX, widthBasis));
+    };
+    const onMove = (ev: PointerEvent) => update(ev.clientX);
+    const onUp = () => {
+      setResizing(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  }, []);
 
   useEffect(() => {
     const un = listen<Progress>("progress", (e) => {
@@ -416,14 +470,18 @@ export default function App() {
           <select
             className="device"
             value={deviceId ?? ""}
-            onChange={(e) => setDeviceId(e.target.value || null)}
+            onChange={(e) => {
+              const next = e.target.value || null;
+              setDeviceId(next);
+              if (next) savePref("deviceId", next);
+            }}
             disabled={busy || recordingSince !== null}
             title="オーディオ入力"
           >
             {devices.length === 0 && <option value="">入力デバイスがありません</option>}
             {devices.map((d) => (
               <option key={d.id} value={d.id}>
-                🎸 {d.name}
+                {isHxAudioDevice(d.name) ? "🎸" : "🎙"} {d.name}
               </option>
             ))}
           </select>
@@ -449,7 +507,11 @@ export default function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main
+        ref={workspaceRef}
+        className={`workspace ${resizing ? "resizing" : ""}`}
+        style={{ "--assistant-width": `${assistantWidth}px` } as CSSProperties}
+      >
         <ChainOverview
           chain={chain}
           connected={hx?.connected ?? false}
@@ -461,14 +523,33 @@ export default function App() {
           recentChanges={recentChanges}
         />
 
-        <aside className="assistant-pane">
-          <section className="ref-bar">
-            <ReferenceDrop disabled={busy} onError={pushError} />
-          </section>
+        <div
+          className={`pane-divider ${resizing ? "active" : ""}`}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="ペイン幅の調整"
+          aria-valuenow={assistantWidth}
+          aria-valuemin={MIN_ASSISTANT_WIDTH}
+          aria-valuemax={MAX_ASSISTANT_WIDTH}
+          tabIndex={0}
+          title="ドラッグで左右の幅を調整 (ダブルクリックでリセット)"
+          onPointerDown={startResize}
+          onDoubleClick={() => setAssistantWidth(DEFAULT_ASSISTANT_WIDTH)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowLeft") {
+              e.preventDefault();
+              setAssistantWidth((w) => clampAssistantWidth(w + 24));
+            } else if (e.key === "ArrowRight") {
+              e.preventDefault();
+              setAssistantWidth((w) => clampAssistantWidth(w - 24));
+            }
+          }}
+        />
 
+        <aside className="assistant-pane">
           <ChatLog messages={messages} progress={progress} blockNames={blockNames} />
 
-          <footer className="composer">
+          <footer className={`composer ${dropHover ? "drag-over" : ""}`}>
             <div className="row controls-top">
               <div className="segmented" role="radiogroup" aria-label="モード">
                 {(
@@ -491,8 +572,12 @@ export default function App() {
               </div>
               {mode === "auto" && (
                 <div className="loop-options small">
-                  <span className="muted">録音</span>
-                  <div className="segmented" role="radiogroup" aria-label="1 回の録音時間">
+                  <div
+                    className="segmented compact"
+                    role="radiogroup"
+                    aria-label="1 回の録音時間"
+                    title="1 回の録音時間"
+                  >
                     {LOOP_SECONDS.map((s) => (
                       <button
                         key={s}
@@ -506,8 +591,12 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-                  <span className="muted">上限</span>
-                  <div className="segmented" role="radiogroup" aria-label="ループの上限">
+                  <div
+                    className="segmented compact"
+                    role="radiogroup"
+                    aria-label="ループの上限"
+                    title="ループの上限回数"
+                  >
                     {LOOP_ITERATIONS.map((n) => (
                       <button
                         key={n}
@@ -525,7 +614,7 @@ export default function App() {
               )}
             </div>
             {mode === "manual" && pending && (
-              <div className="attachment">
+              <div className="recording-inline">
                 <span>
                   🎙 録音 {pending.seconds.toFixed(1)} 秒 · ピーク {pending.peak_dbfs.toFixed(1)} dBFS
                 </span>
@@ -534,10 +623,17 @@ export default function App() {
                 </button>
               </div>
             )}
+            <ReferenceDrop disabled={busy} onError={pushError} onHoverChange={setDropHover} />
             <textarea
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
-              placeholder={mode === "manual" ? "指示" : looping ? "追加の指示" : "目標"}
+              placeholder={
+                mode === "manual"
+                  ? "指示を入力（目標音源のドロップも可）"
+                  : looping
+                    ? "次の回に加える指示"
+                    : "目標を入力・ルーパー再生のまま開始（音源ドロップ可）"
+              }
               rows={3}
               disabled={busy && !looping}
               onKeyDown={(e) => {
