@@ -63,6 +63,7 @@ export function setupBackend(handlers: Record<string, Handler> = {}): Backend {
     list_input_devices: () => DEVICES,
     permission_status: () => GRANTED,
     hx_status: () => HX_CONNECTED,
+    get_chain: () => null,
     disconnect_hx: () => HX_CONNECTED,
     undo_depth: () => 0,
   };

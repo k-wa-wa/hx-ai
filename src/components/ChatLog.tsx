@@ -10,29 +10,47 @@ export interface ChatMessage {
   meta?: string;
 }
 
-export function ChatLog({ messages, progress }: { messages: ChatMessage[]; progress: string | null }) {
+export function ChatLog({
+  messages,
+  progress,
+  blockNames = {},
+}: {
+  messages: ChatMessage[];
+  progress: string | null;
+  blockNames?: Record<string, string>;
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    end.current?.scrollIntoView({ behavior: "smooth" });
+    const el = listRef.current;
+    const nearBottom = el ? el.scrollHeight - el.scrollTop - el.clientHeight < 96 : true;
+    if (nearBottom) {
+      end.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages, progress]);
 
   return (
-    <div className="chat">
+    <div className="chat" ref={listRef}>
       {messages.map((m) => (
         <div key={m.id} className={`msg ${m.role}`}>
           {m.text && <div className="msg-text">{m.text}</div>}
           {m.changes && m.changes.length > 0 && (
             <ul className="changes">
-              {m.changes.map((c, i) => (
-                <li key={i}>
-                  <span className="param">
-                    {c.block} / {c.parameter}
-                  </span>
-                  <span className="vals">
-                    {c.previous_value} → <b>{c.value}</b>
-                  </span>
-                </li>
-              ))}
+              {m.changes.map((c, i) => {
+                const label = blockNames[c.block]
+                  ? `${blockNames[c.block]} · ${c.parameter}`
+                  : `${c.block} / ${c.parameter}`;
+                return (
+                  <li key={i}>
+                    <span className="param" title={`${c.block} / ${c.parameter}`}>
+                      {label}
+                    </span>
+                    <span className="vals">
+                      {c.previous_value} → <b>{c.value}</b>
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
           {m.notRestored && m.notRestored.length > 0 && (
@@ -40,7 +58,7 @@ export function ChatLog({ messages, progress }: { messages: ChatMessage[]; progr
               {m.notRestored.map((t, i) => (
                 <li key={i}>
                   <span className="param">
-                    {t.block} / {t.parameter}
+                    {blockNames[t.block] ? `${blockNames[t.block]} · ${t.parameter}` : `${t.block} / ${t.parameter}`}
                   </span>
                   <span className="vals">{t.value} に戻せていない</span>
                 </li>

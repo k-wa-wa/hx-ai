@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   api,
+  ChainView,
   CycleReport,
+  DoneAction,
   errorText,
   HxStatus,
   InputDevice,
@@ -10,6 +12,7 @@ import {
   Progress,
   RecordingInfo,
 } from "./api";
+import { ChainOverview } from "./components/ChainOverview";
 import { ChatLog, ChatMessage } from "./components/ChatLog";
 import { pickDevice } from "./devices";
 import { formatTime, ReferenceDrop } from "./components/ReferenceDrop";
@@ -54,6 +57,12 @@ export default function App() {
   });
   const [hx, setHx] = useState<HxStatus | null>(null);
   const [hxError, setHxError] = useState<string | null>(null);
+  const [chain, setChain] = useState<ChainView | null>(null);
+  const [chainLoading, setChainLoading] = useState(false);
+  const [chainError, setChainError] = useState<string | null>(null);
+  const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [recentChanges, setRecentChanges] = useState<DoneAction[]>([]);
+  const autoLoadedChainRef = useRef(false);
   const [instruction, setInstruction] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [progress, setProgress] = useState<string | null>(null);
@@ -82,15 +91,36 @@ export default function App() {
     }
   }, [pushError]);
 
+  const refreshChain = useCallback(async () => {
+    if (busy) return;
+    setChainLoading(true);
+    setChainError(null);
+    try {
+      const view = await api.getChain();
+      if (view) setChain(view);
+    } catch (e) {
+      setChainError(errorText(e));
+    } finally {
+      setChainLoading(false);
+    }
+  }, [busy]);
+
   const refreshHx = useCallback(async () => {
     try {
-      setHx(await api.hxStatus());
+      const status = await api.hxStatus();
+      setHx(status);
       setHxError(null);
+      if (!status.connected) {
+        autoLoadedChainRef.current = false;
+      } else if (!autoLoadedChainRef.current) {
+        autoLoadedChainRef.current = true;
+        refreshChain();
+      }
     } catch (e) {
       setHx(null);
       setHxError(errorText(e));
     }
-  }, []);
+  }, [refreshChain]);
 
   const disconnectHx = useCallback(async () => {
     try {
@@ -134,6 +164,19 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const un = listen<ChainView>("chain_updated", (e) => {
+      setChain(e.payload);
+      setChainError(null);
+      setSelectedBlockId((cur) =>
+        cur && e.payload.blocks.some((b) => b.id === cur) ? cur : null,
+      );
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
+
   const showReport = useCallback(
     (r: CycleReport, kind: "adjust" | "undo", label?: string) => {
       const meta: string[] = [];
@@ -162,6 +205,11 @@ export default function App() {
               ? `${r.error}\n(ここまでの ${r.changes.length} 件の変更は「元に戻す」で戻せる)`
               : r.error,
         });
+      }
+      if (kind === "undo") {
+        setRecentChanges([]);
+      } else if (r.changes.length > 0) {
+        setRecentChanges(r.changes);
       }
       setUndoDepth(r.undo_depth);
     },
@@ -332,74 +380,19 @@ export default function App() {
     try {
       await api.clearConversation();
       setMessages([]);
+      setRecentChanges([]);
     } catch (e) {
       pushError(errorText(e));
     }
   };
 
+  const blockNames = Object.fromEntries((chain?.blocks ?? []).map((b) => [b.id, b.name]));
+
   return (
     <div className="app">
       <header className="header">
-        <div className="brand">HX AI</div>
-        <div className="header-actions">
-          <button
-            className="icon-btn"
-            onClick={() => api.openSettingsWindow().catch((e) => pushError(errorText(e)))}
-            title="設定"
-          >
-            ⚙︎
-          </button>
-        </div>
-      </header>
-
-      <section className="controls">
-        <div className="row">
-          <select
-            className="device"
-            value={deviceId ?? ""}
-            onChange={(e) => setDeviceId(e.target.value || null)}
-            disabled={busy || recordingSince !== null}
-            title="オーディオ入力"
-          >
-            {devices.length === 0 && <option value="">入力デバイスがありません</option>}
-            {devices.map((d) => (
-              <option key={d.id} value={d.id}>
-                🎸 {d.name}
-              </option>
-            ))}
-          </select>
-          <button
-            className="icon-btn"
-            onClick={() => {
-              refreshDevices();
-              refreshHx();
-            }}
-            disabled={busy}
-            title="デバイスを再読込"
-          >
-            ↻
-          </button>
-        </div>
-        <div className="row">
-          <div className="segmented" role="radiogroup" aria-label="モード">
-            {(
-              [
-                ["manual", "手動"],
-                ["auto", "自動ループ"],
-              ] as const
-            ).map(([m, label]) => (
-              <button
-                key={m}
-                role="radio"
-                aria-checked={mode === m}
-                className={mode === m ? "on" : ""}
-                onClick={() => setMode(m)}
-                disabled={busy || recordingSince !== null}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <div className="header-left">
+          <div className="brand">HX AI</div>
           <div
             className={`target ${hx?.connected ? "ok" : "ng"}`}
             title={hxError ?? (hx?.connected ? `${hx.device_name ?? "HX Stomp"}` : "USB 未接続")}
@@ -419,113 +412,187 @@ export default function App() {
             </button>
           )}
         </div>
-        {mode === "auto" && (
-          <div className="row small">
-            <span className="muted">録音</span>
-            <div className="segmented" role="radiogroup" aria-label="1 回の録音時間">
-              {LOOP_SECONDS.map((s) => (
-                <button
-                  key={s}
-                  role="radio"
-                  aria-checked={seconds === s}
-                  className={seconds === s ? "on" : ""}
-                  onClick={() => setSeconds(s)}
-                  disabled={busy}
-                >
-                  {s} 秒
-                </button>
-              ))}
-            </div>
-            <span className="muted">上限</span>
-            <div className="segmented" role="radiogroup" aria-label="ループの上限">
-              {LOOP_ITERATIONS.map((n) => (
-                <button
-                  key={n}
-                  role="radio"
-                  aria-checked={maxIterations === n}
-                  className={maxIterations === n ? "on" : ""}
-                  onClick={() => setMaxIterations(n)}
-                  disabled={busy}
-                >
-                  {n} 回
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        <ReferenceDrop disabled={busy} onError={pushError} />
-      </section>
-
-      <ChatLog messages={messages} progress={progress} />
-
-      <footer className="composer">
-        {mode === "manual" && pending && (
-          <div className="attachment">
-            <span>
-              🎙 録音 {pending.seconds.toFixed(1)} 秒 · ピーク {pending.peak_dbfs.toFixed(1)} dBFS
-            </span>
-            <button className="link" onClick={discardRecording} disabled={busy} aria-label="録音を消す">
-              消す
-            </button>
-          </div>
-        )}
-        <textarea
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          placeholder={mode === "manual" ? "指示" : looping ? "追加の指示" : "目標"}
-          rows={2}
-          disabled={busy && !looping}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              submit();
-            }
-          }}
-        />
-        <div className="row">
-          {mode === "manual" ? (
-            <>
-              <button
-                className={`secondary ${recordingSince !== null ? "recording" : ""}`}
-                onClick={toggleRecording}
-                disabled={busy}
-              >
-                {recordingSince !== null ? `■ 停止 ${formatTime(elapsed)}` : "● 録音"}
-              </button>
-              <button
-                className="primary grow"
-                onClick={send}
-                disabled={busy || recordingSince !== null || (!instruction.trim() && !pending)}
-              >
-                {busy ? "処理中…" : "送信"}
-              </button>
-            </>
-          ) : looping ? (
-            <>
-              <button className="primary grow" onClick={stopLoop} disabled={stopping}>
-                {stopping ? "止めています…" : "■ ループを止める"}
-              </button>
-              <button className="secondary" onClick={addLoopInstruction} disabled={!instruction.trim()}>
-                指示を追加
-              </button>
-            </>
-          ) : (
-            <button className="primary grow" onClick={startLoop} disabled={busy}>
-              ▶ 自動ループを始める
-            </button>
-          )}
-          <button className="secondary" onClick={undo} disabled={busy || undoDepth === 0} title="1 つ前の状態に戻す">
-            ↶ 戻す{undoDepth > 0 ? ` (${undoDepth})` : ""}
+        <div className="header-actions">
+          <select
+            className="device"
+            value={deviceId ?? ""}
+            onChange={(e) => setDeviceId(e.target.value || null)}
+            disabled={busy || recordingSince !== null}
+            title="オーディオ入力"
+          >
+            {devices.length === 0 && <option value="">入力デバイスがありません</option>}
+            {devices.map((d) => (
+              <option key={d.id} value={d.id}>
+                🎸 {d.name}
+              </option>
+            ))}
+          </select>
+          <button
+            className="icon-btn"
+            onClick={() => {
+              refreshDevices();
+              refreshHx();
+              if (hx?.connected) refreshChain();
+            }}
+            disabled={busy}
+            title="デバイスとチェーンを再読込"
+          >
+            ↻
+          </button>
+          <button
+            className="icon-btn"
+            onClick={() => api.openSettingsWindow().catch((e) => pushError(errorText(e)))}
+            title="設定"
+          >
+            ⚙︎
           </button>
         </div>
-        {messages.length > 0 && (
-          <div className="hint">
-            <button className="link" onClick={clearChat} disabled={busy}>
-              会話をリセット
-            </button>
-          </div>
-        )}
-      </footer>
+      </header>
+
+      <main className="workspace">
+        <ChainOverview
+          chain={chain}
+          connected={hx?.connected ?? false}
+          loading={chainLoading}
+          error={chainError}
+          onRefresh={refreshChain}
+          selectedBlockId={selectedBlockId}
+          onSelectBlock={setSelectedBlockId}
+          recentChanges={recentChanges}
+        />
+
+        <aside className="assistant-pane">
+          <section className="ref-bar">
+            <ReferenceDrop disabled={busy} onError={pushError} />
+          </section>
+
+          <ChatLog messages={messages} progress={progress} blockNames={blockNames} />
+
+          <footer className="composer">
+            <div className="row controls-top">
+              <div className="segmented" role="radiogroup" aria-label="モード">
+                {(
+                  [
+                    ["manual", "手動"],
+                    ["auto", "自動ループ"],
+                  ] as const
+                ).map(([m, label]) => (
+                  <button
+                    key={m}
+                    role="radio"
+                    aria-checked={mode === m}
+                    className={mode === m ? "on" : ""}
+                    onClick={() => setMode(m)}
+                    disabled={busy || recordingSince !== null}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {mode === "auto" && (
+                <div className="loop-options small">
+                  <span className="muted">録音</span>
+                  <div className="segmented" role="radiogroup" aria-label="1 回の録音時間">
+                    {LOOP_SECONDS.map((s) => (
+                      <button
+                        key={s}
+                        role="radio"
+                        aria-checked={seconds === s}
+                        className={seconds === s ? "on" : ""}
+                        onClick={() => setSeconds(s)}
+                        disabled={busy}
+                      >
+                        {s} 秒
+                      </button>
+                    ))}
+                  </div>
+                  <span className="muted">上限</span>
+                  <div className="segmented" role="radiogroup" aria-label="ループの上限">
+                    {LOOP_ITERATIONS.map((n) => (
+                      <button
+                        key={n}
+                        role="radio"
+                        aria-checked={maxIterations === n}
+                        className={maxIterations === n ? "on" : ""}
+                        onClick={() => setMaxIterations(n)}
+                        disabled={busy}
+                      >
+                        {n} 回
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            {mode === "manual" && pending && (
+              <div className="attachment">
+                <span>
+                  🎙 録音 {pending.seconds.toFixed(1)} 秒 · ピーク {pending.peak_dbfs.toFixed(1)} dBFS
+                </span>
+                <button className="link" onClick={discardRecording} disabled={busy} aria-label="録音を消す">
+                  消す
+                </button>
+              </div>
+            )}
+            <textarea
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              placeholder={mode === "manual" ? "指示" : looping ? "追加の指示" : "目標"}
+              rows={3}
+              disabled={busy && !looping}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+            />
+            <div className="row">
+              {mode === "manual" ? (
+                <>
+                  <button
+                    className={`secondary ${recordingSince !== null ? "recording" : ""}`}
+                    onClick={toggleRecording}
+                    disabled={busy}
+                  >
+                    {recordingSince !== null ? `■ 停止 ${formatTime(elapsed)}` : "● 録音"}
+                  </button>
+                  <button
+                    className="primary grow"
+                    onClick={send}
+                    disabled={busy || recordingSince !== null || (!instruction.trim() && !pending)}
+                  >
+                    {busy ? "処理中…" : "送信"}
+                  </button>
+                </>
+              ) : looping ? (
+                <>
+                  <button className="primary grow" onClick={stopLoop} disabled={stopping}>
+                    {stopping ? "止めています…" : "■ ループを止める"}
+                  </button>
+                  <button className="secondary" onClick={addLoopInstruction} disabled={!instruction.trim()}>
+                    指示を追加
+                  </button>
+                </>
+              ) : (
+                <button className="primary grow" onClick={startLoop} disabled={busy}>
+                  ▶ 自動ループを始める
+                </button>
+              )}
+              <button className="secondary" onClick={undo} disabled={busy || undoDepth === 0} title="1 つ前の状態に戻す">
+                ↶ 戻す{undoDepth > 0 ? ` (${undoDepth})` : ""}
+              </button>
+            </div>
+            {messages.length > 0 && (
+              <div className="hint">
+                <button className="link" onClick={clearChat} disabled={busy}>
+                  会話をリセット
+                </button>
+              </div>
+            )}
+          </footer>
+        </aside>
+      </main>
     </div>
   );
 }

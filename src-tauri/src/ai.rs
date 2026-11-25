@@ -1053,6 +1053,9 @@ mod tests {
         assert_eq!(AudioFormat::from_path("x.mp3").unwrap(), AudioFormat::Mp3);
         assert_eq!(AudioFormat::from_path("x.M4A").unwrap(), AudioFormat::M4a);
         assert!(AudioFormat::from_path("x.ogg").is_err());
+        assert_eq!(AudioFormat::Wav.as_str(), "wav");
+        assert_eq!(AudioFormat::Mp3.as_str(), "mp3");
+        assert_eq!(AudioFormat::M4a.as_str(), "m4a");
     }
 
     #[test]
@@ -1101,6 +1104,20 @@ mod tests {
         let text = content[0]["text"].as_str().unwrap();
         assert!(text.contains("太く"));
         assert!(text.contains("[block2] Tone Sovereign"));
+        assert!(text.ends_with("Gain 1: 2.2 (0.0〜10.0)\n"));
+        assert!(!text.ends_with("\n\n"));
+
+        let mut no_nl = input("太く", &[]);
+        no_nl.chain_text = "[block2] Tone Sovereign";
+        let text2 = build_request("gemini-3.8-flash", &no_nl)["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text2.ends_with("[block2] Tone Sovereign\n"));
         assert_eq!(content[1]["input_audio"]["format"], "wav");
         assert_eq!(content[1]["input_audio"]["data"], "UkVG");
         assert_eq!(content[2]["input_audio"]["data"], "V0FW");

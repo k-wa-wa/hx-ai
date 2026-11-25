@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "HX AI",
-        "width": 360,
-        "height": 720,
-        "minWidth": 320,
-        "minHeight": 560
+        "width": 1240,
+        "height": 820,
+        "minWidth": 760,
+        "minHeight": 580
       }
     ],
     "security": {

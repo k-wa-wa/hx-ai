@@ -512,3 +512,111 @@ describe("リファレンス", () => {
     expect(await screen.findByText("音源ファイルを読めません")).toBeInTheDocument();
   });
 });
+
+describe("エフェクトチェーン一覧", () => {
+  const SAMPLE_CHAIN = {
+    slotLabel: "14B",
+    presetName: "Studio Crunch",
+    tempo: 118.5,
+    snapshots: ["CLEAN"],
+    freeBlockSlots: 4,
+    blocks: [
+      {
+        id: "block1",
+        slot: 1,
+        name: "Tone Sovereign",
+        category: "Dist",
+        colorHex: "#f5901e",
+        enabled: true,
+        locked: false,
+        lockReason: null,
+        readonlyNotes: [],
+        params: [
+          { name: "Gain 1", value: "3.4", kind: "number", min: "0.0", max: "10.0", locked: false },
+          { name: "Clipping 1", value: "Boost", kind: "choice", min: null, max: null, locked: false },
+        ],
+      },
+      {
+        id: "block2",
+        slot: 2,
+        name: "Dynamic Hall",
+        category: "Verb",
+        colorHex: "#ff7722",
+        enabled: false,
+        locked: true,
+        lockReason: "FS2 に割り当て済み",
+        readonlyNotes: [],
+        params: [{ name: "Mix", value: "28%", kind: "number", min: "0%", max: "100%", locked: false }],
+      },
+    ],
+  };
+
+  it("現在のブロック構成とパラメータを一目で表示し、ブロック選択で絞り込める", async () => {
+    setupBackend({ get_chain: () => SAMPLE_CHAIN });
+    const user = await renderApp();
+    expect(await screen.findByText("Studio Crunch")).toBeInTheDocument();
+    expect(screen.getByText("14B")).toBeInTheDocument();
+    expect(screen.getByText("118.5 BPM")).toBeInTheDocument();
+    expect(screen.getByText("Gain 1")).toBeInTheDocument();
+    expect(screen.getByText("3.4")).toBeInTheDocument();
+    expect(screen.getByText("Mix")).toBeInTheDocument();
+    expect(screen.getByText("28%")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Tone Sovereign/ }));
+    expect(screen.getByText("Gain 1")).toBeInTheDocument();
+    expect(screen.queryByText("Mix")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "すべて表示" }));
+    expect(screen.getByText("Mix")).toBeInTheDocument();
+  });
+
+  it("chain_updated イベントで一覧を更新する", async () => {
+    setupBackend();
+    await renderApp();
+    await emit("chain_updated", SAMPLE_CHAIN);
+    expect(await screen.findByText("Studio Crunch")).toBeInTheDocument();
+    expect(screen.getByText("Boost")).toBeInTheDocument();
+    expect(screen.getAllByText("BYPASS")).toHaveLength(2);
+  });
+
+  it("切断や再読込失敗時は取得済みチェーンに最終取得時の表示を出す", async () => {
+    let status = { ...HX_CONNECTED, session_open: true };
+    const b = setupBackend({
+      hx_status: () => status,
+      get_chain: () => SAMPLE_CHAIN,
+    });
+    const user = await renderApp();
+    expect(await screen.findByText("Studio Crunch")).toBeInTheDocument();
+
+    status = { connected: false, device_name: null, session_open: false };
+    await user.click(screen.getByRole("button", { name: "↻" }));
+    expect(await screen.findByText(/未接続 · 最終取得時の設定/)).toBeInTheDocument();
+    expect(b.callsTo("get_chain").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("直前の変更があったブロックとパラメータを一覧上で見分けられ、チャットにもモデル名を出す", async () => {
+    setupBackend({
+      get_chain: () => SAMPLE_CHAIN,
+      send_message: () =>
+        report({
+          changes: [
+            {
+              block: "block1",
+              parameter: "Gain 1",
+              previous_value: "3.4",
+              value: "5.2",
+            },
+          ],
+          undo_depth: 1,
+        }),
+    });
+    const user = await renderApp();
+    expect(await screen.findByText("Studio Crunch")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "少し歪ませて");
+    await user.click(screen.getByRole("button", { name: SEND }));
+
+    expect(await screen.findByText("Tone Sovereign · Gain 1")).toBeInTheDocument();
+    expect(screen.getByText("変更")).toBeInTheDocument();
+  });
+});

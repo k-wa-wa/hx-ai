@@ -39,6 +39,37 @@ export interface HxStatus {
   session_open: boolean;
 }
 
+export interface ParamUiView {
+  name: string;
+  value: string;
+  kind: "number" | "choice" | "readonly";
+  min: string | null;
+  max: string | null;
+  locked: boolean;
+}
+
+export interface BlockUiView {
+  id: string;
+  slot: number;
+  name: string;
+  category: string;
+  colorHex: string;
+  enabled: boolean;
+  locked: boolean;
+  lockReason: string | null;
+  readonlyNotes: string[];
+  params: ParamUiView[];
+}
+
+export interface ChainView {
+  slotLabel: string;
+  presetName: string;
+  tempo: number | null;
+  snapshots: string[];
+  freeBlockSlots: number;
+  blocks: BlockUiView[];
+}
+
 export interface ReferenceInfo {
   name: string;
   mime: string;
@@ -108,6 +139,7 @@ export const api = {
   /** 許可を求める。一度拒否されているなどダイアログが出ないときはシステム設定を開く。 */
   grantPermission: (kind: PermissionKind) => invoke<void>("grant_permission", { kind }),
   hxStatus: () => invoke<HxStatus>("hx_status"),
+  getChain: () => invoke<ChainView>("get_chain"),
   disconnectHx: () => invoke<HxStatus>("disconnect_hx"),
   setReference: (path: string) => invoke<ReferenceInfo>("set_reference", { path }),
   setReferenceStart: (seconds: number) => invoke<ReferenceInfo>("set_reference_start", { seconds }),

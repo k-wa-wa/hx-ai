@@ -15,8 +15,8 @@ use crate::ai::{self, AiResponse, AudioFormat, ChatTurn, DoneAction, RequestInpu
 use crate::audio;
 use crate::config::{self, ResolvedSettings, StoredSettings};
 use crate::hx_device::{
-    self, AppliedEdit, AppliedStep, BlockOp, ChainSnapshot, OperationsOutcome, RestoreFailure,
-    UndoEntry, UsbHxPort,
+    self, AppliedEdit, AppliedStep, BlockOp, ChainSnapshot, ChainView, OperationsOutcome,
+    RestoreFailure, UndoEntry, UsbHxPort,
 };
 use crate::macos;
 use crate::sound::{self, MAX_RECORD_SECONDS, Prepared, ReferenceClip, ReferenceTrack};
@@ -269,6 +269,7 @@ pub struct LoopIteration {
 #[allow(async_fn_in_trait)]
 pub trait Engine {
     fn progress(&self, stage: &str, message: String);
+    fn chain(&self, _view: ChainView) {}
     async fn read_chain(&mut self) -> Result<ChainSnapshot, String>;
     async fn ask(&mut self, body: &Value) -> Result<AiResponse, String>;
     async fn apply(
@@ -290,6 +291,10 @@ pub trait Engine {
 struct Progress {
     stage: String,
     message: String,
+}
+
+fn emit_chain(app: &AppHandle, view: &ChainView) {
+    let _ = app.emit("chain_updated", view);
 }
 
 fn emit_progress(app: &AppHandle, stage: &str, message: String) {
@@ -337,6 +342,10 @@ impl Engine for TauriEngine {
         emit_progress(&self.app, stage, message);
     }
 
+    fn chain(&self, view: ChainView) {
+        emit_chain(&self.app, &view);
+    }
+
     async fn read_chain(&mut self) -> Result<ChainSnapshot, String> {
         let hx = self.hx.clone();
         blocking(move || with_usb(&hx, hx_device::HxPort::read_snapshot)).await
@@ -357,12 +366,20 @@ impl Engine for TauriEngine {
         ops: &[BlockOp],
     ) -> Result<OperationsOutcome, String> {
         let hx = self.hx.clone();
+        let app = self.app.clone();
         let snap = snap.clone();
         let changes = changes.to_vec();
         let ops = ops.to_vec();
         blocking(move || {
             with_usb(&hx, |p| {
-                hx_device::apply_operations(p, &snap, &changes, &ops)
+                let outcome = hx_device::apply_operations(p, &snap, &changes, &ops)?;
+                if !outcome.steps.is_empty()
+                    && !outcome.added_or_replaced
+                    && let Ok(updated) = hx_device::HxPort::read_snapshot(p)
+                {
+                    emit_chain(&app, &hx_device::to_chain_view(&updated));
+                }
+                Ok(outcome)
             })
         })
         .await
@@ -370,39 +387,48 @@ impl Engine for TauriEngine {
 
     async fn restore(&mut self, entry: &UndoEntry) -> Vec<RestoreFailure> {
         let hx = self.hx.clone();
+        let app = self.app.clone();
         let to_restore = entry.clone();
-        blocking(move || with_usb(&hx, |p| Ok(hx_device::restore_undo(p, &to_restore))))
-            .await
-            .unwrap_or_else(|reason| match entry {
-                UndoEntry::Edits(edits) => edits
-                    .iter()
-                    .rev()
-                    .map(|e| match e {
-                        AppliedEdit::Param(a) => RestoreFailure {
-                            block: a.block_id.clone(),
-                            parameter: a.param_name.clone(),
-                            value: a.previous_display.clone(),
-                            reason: reason.clone(),
-                        },
-                        AppliedEdit::Enabled {
-                            block_id,
-                            previous_enabled,
-                            ..
-                        } => RestoreFailure {
-                            block: block_id.clone(),
-                            parameter: "状態 (ON/OFF)".into(),
-                            value: if *previous_enabled { "ON" } else { "OFF" }.into(),
-                            reason: reason.clone(),
-                        },
-                    })
-                    .collect(),
-                UndoEntry::PresetSnapshot { summary, .. } => vec![RestoreFailure {
-                    block: "プリセット".into(),
-                    parameter: "編集バッファ復元".into(),
-                    value: summary.clone(),
-                    reason,
-                }],
+        blocking(move || {
+            with_usb(&hx, |p| {
+                let failures = hx_device::restore_undo(p, &to_restore);
+                if let Ok(updated) = hx_device::HxPort::read_snapshot(p) {
+                    emit_chain(&app, &hx_device::to_chain_view(&updated));
+                }
+                Ok(failures)
             })
+        })
+        .await
+        .unwrap_or_else(|reason| match entry {
+            UndoEntry::Edits(edits) => edits
+                .iter()
+                .rev()
+                .map(|e| match e {
+                    AppliedEdit::Param(a) => RestoreFailure {
+                        block: a.block_id.clone(),
+                        parameter: a.param_name.clone(),
+                        value: a.previous_display.clone(),
+                        reason: reason.clone(),
+                    },
+                    AppliedEdit::Enabled {
+                        block_id,
+                        previous_enabled,
+                        ..
+                    } => RestoreFailure {
+                        block: block_id.clone(),
+                        parameter: "状態 (ON/OFF)".into(),
+                        value: if *previous_enabled { "ON" } else { "OFF" }.into(),
+                        reason: reason.clone(),
+                    },
+                })
+                .collect(),
+            UndoEntry::PresetSnapshot { summary, .. } => vec![RestoreFailure {
+                block: "プリセット".into(),
+                parameter: "編集バッファ復元".into(),
+                value: summary.clone(),
+                reason,
+            }],
+        })
     }
 
     async fn record(&mut self) -> Result<Prepared, String> {
@@ -572,6 +598,7 @@ pub async fn adjust<E: Engine>(
     let result: Result<(), String> = async {
         engine.progress("capture", "HX Stomp から現在の設定を取得中".into());
         let snap = engine.read_chain().await?;
+        engine.chain(hx_device::to_chain_view(&snap));
         let chain_text = hx_device::render_chain(&snap);
 
         engine.progress("ai", format!("AI ({model}) に問い合わせ中"));
@@ -625,6 +652,7 @@ pub async fn adjust<E: Engine>(
                 "追加・変更したブロックのパラメータを取得中".into(),
             );
             let snap2 = engine.read_chain().await?;
+            engine.chain(hx_device::to_chain_view(&snap2));
             let chain_text2 = hx_device::render_chain(&snap2);
 
             let mut follow_history = history.clone();
@@ -1107,6 +1135,17 @@ pub async fn undo_last(app: AppHandle, state: &AppState) -> Result<CycleReport, 
     let report = revert(&mut engine, state).await;
     emit_progress(&app, "done", "完了".into());
     report
+}
+
+/// 画面表示用に現在のプリセットとブロック設定を読み取る。
+pub async fn read_chain_view(app: AppHandle, state: &AppState) -> Result<ChainView, String> {
+    let _busy = BusyGuard::acquire(&state.busy)?;
+    state.ensure_hx_keepalive();
+    let hx = state.hx.clone();
+    let snap = blocking(move || with_usb(&hx, hx_device::HxPort::read_snapshot)).await?;
+    let view = hx_device::to_chain_view(&snap);
+    emit_chain(&app, &view);
+    Ok(view)
 }
 
 #[cfg(test)]

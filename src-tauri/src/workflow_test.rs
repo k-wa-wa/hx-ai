@@ -38,6 +38,7 @@ struct FakeEngine {
     on_ask: Option<Box<dyn FnMut(usize)>>,
     iterations: Vec<LoopIteration>,
     settles: usize,
+    progress_log: std::sync::Mutex<Vec<String>>,
 }
 
 fn sample_chain() -> ChainSnapshot {
@@ -53,6 +54,8 @@ fn sample_chain() -> ChainSnapshot {
             slot: 5,
             model_number: 1,
             name: "Brit J45 Brt".into(),
+            category: "Amp".into(),
+            color_hex: "#dd1111".into(),
             enabled: true,
             locked: false,
             lock_reason: None,
@@ -113,6 +116,7 @@ impl FakeEngine {
             on_ask: None,
             iterations: vec![],
             settles: 0,
+            progress_log: std::sync::Mutex::new(vec![]),
         }
     }
 
@@ -219,7 +223,9 @@ fn default_apply(snap: &ChainSnapshot, changes: &[Change], ops: &[BlockOp]) -> O
 }
 
 impl Engine for FakeEngine {
-    fn progress(&self, _stage: &str, _message: String) {}
+    fn progress(&self, _stage: &str, message: String) {
+        self.progress_log.lock().unwrap().push(message);
+    }
 
     async fn read_chain(&mut self) -> Result<ChainSnapshot, String> {
         self.chains
@@ -527,6 +533,12 @@ async fn revert_restores_directly_without_calling_ai() {
     assert_eq!(r.changes[0].value, "5.0");
     assert_eq!(r.changes[0].previous_value, "6.0");
     assert_eq!(undo_stack(&s).len(), 1, "最後の 1 組だけ消える");
+    assert!(
+        e.progress_log
+            .lock()
+            .unwrap()
+            .contains(&"HX Stomp の変更を元に戻しています (2 件)".to_string())
+    );
 }
 
 #[tokio::test]
@@ -571,6 +583,8 @@ async fn add_block_triggers_followup_to_set_initial_params_and_undoes_as_one_sna
         slot: 6,
         model_number: 1,
         name: "Dynamic Hall".into(),
+        category: "Verb".into(),
+        color_hex: "#ff7722".into(),
         enabled: true,
         locked: false,
         lock_reason: None,
@@ -580,8 +594,12 @@ async fn add_block_triggers_followup_to_set_initial_params_and_undoes_as_one_sna
 
     let mut e = FakeEngine::new(vec![
         Ok(AiResponse {
-            explanation: "Dynamic Hall を最後に追加します".into(),
-            changes: vec![],
+            explanation: "Dynamic Hall を最後に追加し Bass を調整します".into(),
+            changes: vec![AiChange {
+                block: "block5".into(),
+                parameter: "Bass".into(),
+                value: "6.0".into(),
+            }],
             block_operations: vec![AiBlockOp {
                 action: BlockOpAction::Add,
                 block: None,
@@ -593,13 +611,27 @@ async fn add_block_triggers_followup_to_set_initial_params_and_undoes_as_one_sna
             goal_reached: false,
         }),
         Ok(AiResponse {
-            explanation: "Mix を 25% に設定します".into(),
-            changes: vec![AiChange {
-                block: "block6".into(),
-                parameter: "Mix".into(),
-                value: "25 %".into(),
+            explanation: "   ".into(),
+            changes: vec![
+                AiChange {
+                    block: "block6".into(),
+                    parameter: "Mix".into(),
+                    value: "25 %".into(),
+                },
+                AiChange {
+                    block: "block5".into(),
+                    parameter: "Treble".into(),
+                    value: "6.0".into(),
+                },
+            ],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Disable,
+                block: Some("block5".into()),
+                model: None,
+                position: None,
+                stereo: None,
+                amp_cab: false,
             }],
-            block_operations: vec![],
             goal_reached: true,
         }),
     ]);
@@ -610,12 +642,16 @@ async fn add_block_triggers_followup_to_set_initial_params_and_undoes_as_one_sna
     assert_eq!(r.error, None);
     assert!(r.goal_reached);
     assert_eq!(e.requests.len(), 2, "追加後に再取得して 2 ステップ目が走る");
+    assert_eq!(r.explanations.len(), 1, "空白だけの説明は追加しない");
     assert!(e.request_text(1).contains("[block6] Dynamic Hall"));
-    assert_eq!(r.changes.len(), 2);
-    assert_eq!(r.changes[0].parameter, "ブロック追加");
-    assert_eq!(r.changes[0].value, "Dynamic Hall");
-    assert_eq!(r.changes[1].block, "block6");
-    assert_eq!(r.changes[1].parameter, "Mix");
+    assert_eq!(r.changes.len(), 5);
+    assert_eq!(r.changes[1].parameter, "ブロック追加");
+    assert_eq!(r.changes[1].value, "Dynamic Hall");
+    assert_eq!(r.changes[2].block, "block6");
+    assert_eq!(r.changes[2].parameter, "Mix");
+    assert_eq!(r.changes[4].parameter, "状態 (ON/OFF)");
+    assert_eq!(r.changes[4].value, "OFF");
+    assert_eq!(r.changes[4].previous_value, "ON");
 
     // 1 つの PresetSnapshot として Undo でき、revert で戻る
     let stack = undo_stack(&s);
@@ -625,6 +661,67 @@ async fn add_block_triggers_followup_to_set_initial_params_and_undoes_as_one_sna
     assert_eq!(rev.error, None);
     assert_eq!(rev.changes[0].parameter, "編集バッファ復元");
     assert!(undo_stack(&s).is_empty());
+
+    let progress = e.progress_log.lock().unwrap().clone();
+    assert!(progress.contains(&"HX Stomp に反映中 (2 件)".to_string()));
+    assert!(progress.contains(&"HX Stomp に反映中 (3 件)".to_string()));
+    assert!(progress.contains(&"HX Stomp の変更を元に戻しています (1 件)".to_string()));
+
+    // フォローアップで変更なしなら 2 回目の apply は走らない
+    let mut e2 = FakeEngine::new(vec![
+        Ok(AiResponse {
+            explanation: "追加".into(),
+            changes: vec![],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Add,
+                block: None,
+                model: Some("Dynamic Hall".into()),
+                position: Some("end".into()),
+                stereo: None,
+                amp_cab: false,
+            }],
+            goal_reached: false,
+        }),
+        Ok(AiResponse {
+            explanation: "初期値で十分".into(),
+            changes: vec![],
+            block_operations: vec![],
+            goal_reached: true,
+        }),
+    ]);
+    let r2 = adjust_with(&mut e2, &s, "リバーブ").await;
+    assert_eq!(r2.error, None);
+    assert_eq!(e2.applied_calls.len(), 1);
+
+    // フォローアップで changes のみ (block_operations が空) でも 2 回目の apply が走る
+    let mut e3 = FakeEngine::new(vec![
+        Ok(AiResponse {
+            explanation: "追加".into(),
+            changes: vec![],
+            block_operations: vec![AiBlockOp {
+                action: BlockOpAction::Add,
+                block: None,
+                model: Some("Dynamic Hall".into()),
+                position: Some("end".into()),
+                stereo: None,
+                amp_cab: false,
+            }],
+            goal_reached: false,
+        }),
+        Ok(AiResponse {
+            explanation: "Bass を微調整".into(),
+            changes: vec![AiChange {
+                block: "block5".into(),
+                parameter: "Bass".into(),
+                value: "5.5".into(),
+            }],
+            block_operations: vec![],
+            goal_reached: true,
+        }),
+    ]);
+    let r3 = adjust_with(&mut e3, &s, "リバーブ").await;
+    assert_eq!(r3.error, None);
+    assert_eq!(e3.applied_calls.len(), 2);
 }
 
 #[tokio::test]

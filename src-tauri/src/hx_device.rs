@@ -119,6 +119,8 @@ pub struct BlockView {
     pub slot: usize,
     pub model_number: u32,
     pub name: String,
+    pub category: String,
+    pub color_hex: String,
     pub enabled: bool,
     /// フットスイッチ・コントローラー・スナップショット切り替え対象などのため、削除・モデル差し替え不可か。
     pub locked: bool,
@@ -139,6 +141,93 @@ pub struct ChainSnapshot {
     /// 構造変更を含む Undo 用に、読み込み時の編集バッファ生バイト列を控える。
     pub raw_preset: Option<Vec<u8>>,
     pub blocks: Vec<BlockView>,
+}
+
+/// 画面表示向けのパラメータ 1 件。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ParamUiView {
+    pub name: String,
+    pub value: String,
+    pub kind: &'static str,
+    pub min: Option<String>,
+    pub max: Option<String>,
+    pub locked: bool,
+}
+
+/// 画面表示向けのブロック 1 つ。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockUiView {
+    pub id: String,
+    pub slot: usize,
+    pub name: String,
+    pub category: String,
+    pub color_hex: String,
+    pub enabled: bool,
+    pub locked: bool,
+    pub lock_reason: Option<String>,
+    pub readonly_notes: Vec<String>,
+    pub params: Vec<ParamUiView>,
+}
+
+/// 画面表示向けのプリセットとエフェクトチェーン全体。
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChainView {
+    pub slot_label: String,
+    pub preset_name: String,
+    pub tempo: Option<f32>,
+    pub snapshots: Vec<String>,
+    pub free_block_slots: usize,
+    pub blocks: Vec<BlockUiView>,
+}
+
+/// 内部スナップショットをフロントエンド向けの JSON 表現に変換する。
+pub fn to_chain_view(snap: &ChainSnapshot) -> ChainView {
+    ChainView {
+        slot_label: snap.slot_label.clone(),
+        preset_name: snap.preset_name.clone(),
+        tempo: snap.tempo,
+        snapshots: snap.snapshots.clone(),
+        free_block_slots: snap.free_block_slots,
+        blocks: snap
+            .blocks
+            .iter()
+            .map(|b| BlockUiView {
+                id: b.id.clone(),
+                slot: b.slot,
+                name: b.name.clone(),
+                category: b.category.clone(),
+                color_hex: b.color_hex.clone(),
+                enabled: b.enabled,
+                locked: b.locked,
+                lock_reason: b.lock_reason.clone(),
+                readonly_notes: b.readonly_notes.clone(),
+                params: b
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let (kind, min, max) = match &p.kind {
+                            ParamKindView::Number { min, max } => {
+                                ("number", Some(min.clone()), Some(max.clone()))
+                            }
+                            ParamKindView::Choice { .. } => ("choice", None, None),
+                            ParamKindView::ReadOnly => ("readonly", None, None),
+                        };
+                        ParamUiView {
+                            name: p.name.clone(),
+                            value: p.value.clone(),
+                            kind,
+                            min,
+                            max,
+                            locked: p.locked,
+                        }
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 /// 検証済みの 1 件の書き込み計画。
@@ -243,17 +332,15 @@ pub fn snapshot_from_preset(
         .into_iter()
         .filter(|s| s.valid)
         .collect();
-    if valid_snapshots.len() > 1 {
-        for (slot, _) in preset.blocks() {
-            let states: Vec<bool> = valid_snapshots
-                .iter()
-                .filter_map(|s| s.enabled.get(slot).and_then(|v| *v))
-                .collect();
-            if states.iter().any(|&b| b) && states.iter().any(|&b| !b) {
-                locked_blocks
-                    .entry(slot)
-                    .or_insert_with(|| "スナップショット間で ON/OFF が異なるため固定".into());
-            }
+    for (slot, _) in preset.blocks() {
+        let states: Vec<bool> = valid_snapshots
+            .iter()
+            .filter_map(|s| s.enabled.get(slot).and_then(|v| *v))
+            .collect();
+        if states.iter().any(|&b| b) && states.iter().any(|&b| !b) {
+            locked_blocks
+                .entry(slot)
+                .or_insert_with(|| "スナップショット間で ON/OFF が異なるため固定".into());
         }
     }
 
@@ -312,12 +399,31 @@ pub fn snapshot_from_preset(
 
             let lock_reason = locked_blocks.get(&slot).cloned();
             let locked = lock_reason.is_some();
+            let (category, color_hex) = match catalog
+                .model_number(model_number)
+                .and_then(|m| catalog.category_of(&m.id))
+                .and_then(|id| catalog.category(id))
+            {
+                Some(cat) => {
+                    let label = if block.paired.is_some() && cat.name == "Amp" {
+                        "Amp+Cab".to_string()
+                    } else if !cat.short_name.is_empty() {
+                        cat.short_name.clone()
+                    } else {
+                        cat.name.clone()
+                    };
+                    (label, format!("#{:06x}", cat.colour & 0x00ff_ffff))
+                }
+                None => ("FX".to_string(), "#646874".to_string()),
+            };
 
             BlockView {
                 id: format!("block{slot}"),
                 slot,
                 model_number,
                 name: model_name,
+                category,
+                color_hex,
                 enabled: block.enabled,
                 locked,
                 lock_reason,
@@ -591,7 +697,6 @@ fn find_symbol_for_model<'a>(
             "モデル '{model_name}' のデバイス番号が見つかりません"
         ));
     }
-    let has_non_stereo = candidates.iter().any(|s| !s.symbol.ends_with("Stereo"));
     match stereo {
         Some(true) => candidates
             .into_iter()
@@ -601,16 +706,11 @@ fn find_symbol_for_model<'a>(
             .into_iter()
             .find(|s| !s.symbol.ends_with("Stereo"))
             .ok_or_else(|| format!("モデル '{model_name}' には Mono 版がありません")),
-        None => {
-            if has_non_stereo {
-                Ok(candidates
-                    .into_iter()
-                    .find(|s| !s.symbol.ends_with("Stereo"))
-                    .unwrap())
-            } else {
-                Ok(candidates.into_iter().next().unwrap())
-            }
-        }
+        None => Ok(candidates
+            .iter()
+            .copied()
+            .find(|s| !s.symbol.ends_with("Stereo"))
+            .unwrap_or(candidates[0])),
     }
 }
 
@@ -762,6 +862,7 @@ pub struct OperationsOutcome {
     pub error: Option<String>,
 }
 
+#[derive(Debug)]
 enum PlannedOp {
     SetEnabled {
         slot: usize,
@@ -959,20 +1060,11 @@ fn resolve_insert_anchor(
 ) -> Result<usize, String> {
     let layout = preset.layout();
     match position {
-        BlockPosition::End => {
-            if let Some(output) = layout.paths.first().and_then(|p| p.output) {
-                return Ok(output);
-            }
-            let last_hold = preset
-                .slots
-                .iter()
-                .enumerate()
-                .rev()
-                .find(|(_, s)| matches!(s.kind, SlotKind::Block | SlotKind::Empty))
-                .map(|(i, _)| i + 1)
-                .ok_or_else(|| "配置できるブロックスロットがありません".to_string())?;
-            Ok(last_hold)
-        }
+        BlockPosition::End => layout
+            .paths
+            .first()
+            .and_then(|p| p.output)
+            .ok_or_else(|| "プリセットの Output 位置が見つかりません".to_string()),
         BlockPosition::Before(id) => {
             let orig = parse_block_slot(id)?;
             slot_map
@@ -986,25 +1078,7 @@ fn resolve_insert_anchor(
                 .get(&orig)
                 .copied()
                 .ok_or_else(|| format!("配置基準ブロック {id} の位置を追跡できません"))?;
-            let Some(bounds) = preset.lane_bounds(cur) else {
-                return Ok(cur + 1);
-            };
-            let mut seg_end = bounds.end;
-            for path in &layout.paths {
-                if path.input.is_some() && bounds.start <= cur && cur < bounds.end {
-                    let split_at = path.split.and_then(|s| preset.attach_of(s));
-                    let join_at = path.join.and_then(|j| preset.attach_of(j));
-                    if let (Some(sp), Some(jn)) = (split_at, join_at) {
-                        if bounds.contains(&sp) && cur < sp {
-                            seg_end = sp;
-                        } else if bounds.contains(&jn) && cur < jn {
-                            seg_end = jn;
-                        }
-                    }
-                    break;
-                }
-            }
-            Ok((cur + 1).min(seg_end))
+            Ok(cur + 1)
         }
     }
 }
@@ -1333,13 +1407,11 @@ pub fn apply_operations(
             let moved = preset.encode() != before_add_bytes;
 
             // スライド前後で占有スロット一覧の対応を取り、元のブロック識別子を追跡する
-            if moved && before_occupied.len() == after_occupied.len() {
-                let shift: HashMap<usize, usize> =
-                    before_occupied.into_iter().zip(after_occupied).collect();
-                for cur in slot_map.values_mut() {
-                    if let Some(&next) = shift.get(cur) {
-                        *cur = next;
-                    }
+            let shift: HashMap<usize, usize> =
+                before_occupied.into_iter().zip(after_occupied).collect();
+            for cur in slot_map.values_mut() {
+                if let Some(&next) = shift.get(cur) {
+                    *cur = next;
                 }
             }
 
@@ -1778,6 +1850,12 @@ mod tests {
                 "name": "1x12 US Deluxe",
                 "category": 4,
                 "params": []
+            },
+            {
+                "symbolicID": "Test_StereoOnly",
+                "name": "Stereo Only",
+                "category": 2,
+                "params": []
             }
         ]"#;
         std::fs::write(dir.join("distortion.models"), models).unwrap();
@@ -1800,7 +1878,8 @@ mod tests {
                     "shortName": "Verb",
                     "color": "0xff7722",
                     "models": [
-                        { "id": "Test_DynamicHall" }
+                        { "id": "Test_DynamicHall" },
+                        { "id": "Test_StereoOnly" }
                     ],
                     "subcategories": []
                 },
@@ -1850,6 +1929,11 @@ mod tests {
             {
                 "symbol": "Test_CabDeluxe",
                 "parameters": []
+            },
+            {
+                "symbol": "Test_StereoOnlyStereo",
+                "model": "Test_StereoOnly",
+                "parameters": []
             }
         ]"#;
         std::fs::write(dir.join("Helix.sym"), sym).unwrap();
@@ -1872,6 +1956,7 @@ mod tests {
         snapshot: ChainSnapshot,
         writes: Vec<(usize, usize, WireValue)>,
         events: Vec<FakeEvent>,
+        read_calls: usize,
         write_calls: usize,
         fail_on_write: Option<usize>,
         fail_on_set_model: Option<String>,
@@ -1885,6 +1970,7 @@ mod tests {
                 snapshot,
                 writes: vec![],
                 events: vec![],
+                read_calls: 0,
                 write_calls: 0,
                 fail_on_write: None,
                 fail_on_set_model: None,
@@ -1895,6 +1981,7 @@ mod tests {
 
     impl HxPort for FakePort {
         fn read_snapshot(&mut self) -> Result<ChainSnapshot, String> {
+            self.read_calls += 1;
             Ok(self.snapshot.clone())
         }
         fn write_param(
@@ -2038,6 +2125,8 @@ mod tests {
                 slot: 2,
                 model_number: 0,
                 name: "Tone Sovereign".into(),
+                category: "Dist".into(),
+                color_hex: "#f5901e".into(),
                 enabled: true,
                 locked: false,
                 lock_reason: None,
@@ -2369,7 +2458,7 @@ mod tests {
                     V::Array(vec![V::Nil, V::Bool(true)]),
                     V::Array(vec![V::Nil, V::Bool(true)]),
                     V::Array(vec![V::Nil, V::Bool(true)]),
-                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(false)]),
                     V::Array(vec![V::Nil, V::Bool(true)]),
                 ]),
                 4 => V::Str("SNAP 1".into()),
@@ -2381,7 +2470,7 @@ mod tests {
                     V::Array(vec![V::Nil, V::Bool(true)]),
                     V::Array(vec![V::Nil, V::Bool(false)]),
                     V::Array(vec![V::Nil, V::Bool(true)]),
-                    V::Array(vec![V::Nil, V::Bool(true)]),
+                    V::Array(vec![V::Nil, V::Bool(false)]),
                     V::Array(vec![V::Nil, V::Bool(true)]),
                 ]),
                 4 => V::Str("SNAP 2".into()),
@@ -2463,9 +2552,13 @@ mod tests {
         assert_eq!(stereo.model_number, 2);
         assert!(stereo.is_stereo);
 
-        // Mono のみのモデルに Stereo 指定したらエラー
+        // Mono のみのモデルに Stereo 指定したらエラー、Stereo のみのモデルに Mono 指定したらエラー
         let err = resolve_model(&catalog, "Tone Sovereign", Some(true), false).unwrap_err();
         assert!(err.contains("Stereo 版がありません"), "{err}");
+        let err_mono = resolve_model(&catalog, "Stereo Only", Some(false), false).unwrap_err();
+        assert!(err_mono.contains("Mono 版がありません"), "{err_mono}");
+        let stereo_default = resolve_model(&catalog, "Stereo Only", None, false).unwrap();
+        assert_eq!(stereo_default.model_number, 5);
 
         // Amp 単体 vs Amp+Cab
         let amp_only = resolve_model(&catalog, "Brit J45 Brt", None, false).unwrap();
@@ -2508,6 +2601,42 @@ mod tests {
             "Snap Preset".into(),
         );
         assert!(snap_sn.blocks[0].locked);
+
+        // スナップショット間で常に ON / 常に OFF のブロックはロックされない、かつ ReadOnly 表示は [固定] を付けない
+        let mut p_const = p_snap;
+        if let Some(hx_proto::msgpack::Value::Array(slots)) = p_const.tone.at_mut(&[0, 22]) {
+            let extra = slots[1].clone();
+            slots[2] = extra.clone();
+            slots[3] = extra;
+        }
+        let p_const = Preset::parse(&p_const.encode()).unwrap();
+        let mut snap_const = snapshot_from_preset(
+            &p_const,
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "Multi Snap".into(),
+        );
+        assert!(snap_const.blocks[0].locked, "true/false の slot 1 は固定");
+        assert!(!snap_const.blocks[1].locked, "true/true の slot 2 は非固定");
+        assert!(
+            !snap_const.blocks[2].locked,
+            "false/false の slot 3 は非固定"
+        );
+        // slot 3 はスナップショット配列で true/true、もし false/false でも非固定であることを確認
+        snap_const.blocks[1].params.push(ParamView {
+            index: 99,
+            name: "Memo".into(),
+            value: "abc".into(),
+            native_value: 0.0,
+            wire_kind: CatalogKind::Text,
+            kind: ParamKindView::ReadOnly,
+            locked: true,
+            lock_reason: Some("文字入力".into()),
+        });
+        let rendered = render_chain(&snap_const);
+        assert!(rendered.contains("Memo: abc (変更不可)\n"));
+        assert!(!rendered.contains("Memo: abc (変更不可) [固定"));
     }
 
     #[test]
@@ -2639,6 +2768,7 @@ mod tests {
             vec![FakeEvent::WritePreset, FakeEvent::Model(1, 2, None)]
         );
         assert_eq!(port.snapshot.blocks.len(), 2);
+        assert_eq!(port.read_calls, 0);
         assert_eq!(port.snapshot.blocks[0].model_number, 2);
         assert_eq!(port.snapshot.blocks[1].model_number, 0);
 
@@ -2682,6 +2812,7 @@ mod tests {
 
         // slot 2 が空いているので WritePreset は飛ばず set_model(2, 3, Some(4)) のみ
         assert_eq!(port.events, vec![FakeEvent::Model(2, 3, Some(4))]);
+        assert_eq!(port.snapshot.blocks[1].category, "Amp+Cab");
         assert_eq!(
             outcome.steps,
             vec![AppliedStep::Added {
@@ -2791,6 +2922,184 @@ mod tests {
         assert!(!outcome2.added_or_replaced);
         assert_eq!(port.events, vec![FakeEvent::Clear(1)]);
         assert_eq!(port.snapshot.blocks.len(), 0);
+    }
+
+    #[test]
+    fn multi_add_tracks_shifted_slots_and_plan_checks_limits() {
+        let (catalog, _tmp) = test_catalog();
+        let mut snap_no_raw = sample_snapshot(&catalog, false);
+        snap_no_raw.free_block_slots = 1;
+        // raw_preset なしでも SetEnabled は通り、Add は弾く
+        let (_, ops_ok) = plan_operations(
+            &snap_no_raw,
+            &[],
+            &[BlockOp::SetEnabled {
+                block: "block2".into(),
+                enabled: false,
+            }],
+            &catalog,
+        )
+        .unwrap();
+        assert_eq!(ops_ok.len(), 1);
+        let err_raw = plan_operations(
+            &snap_no_raw,
+            &[],
+            &[BlockOp::Add {
+                model: "Dynamic Hall".into(),
+                position: BlockPosition::End,
+                stereo: None,
+                amp_cab: false,
+            }],
+            &catalog,
+        )
+        .unwrap_err();
+        assert!(err_raw.contains("構造情報"), "{err_raw}");
+
+        // 上限ちょうど (2 + 10 = 12) は許可し、13 は拒否する (+ と * や > と >= を検証)
+        let mut snap_with_raw = snap_no_raw.clone();
+        snap_with_raw.raw_preset = Some(test_preset(false, false).encode());
+        snap_with_raw.free_block_slots = 10;
+        let changes_2 = vec![
+            Change {
+                block: "block2".into(),
+                parameter: "Gain 1".into(),
+                value: "3.0".into(),
+            },
+            Change {
+                block: "block2".into(),
+                parameter: "Clipping 1".into(),
+                value: "Boost".into(),
+            },
+        ];
+        let one_add = BlockOp::Add {
+            model: "Dynamic Hall".into(),
+            position: BlockPosition::End,
+            stereo: None,
+            amp_cab: false,
+        };
+        let ops_10 = vec![one_add.clone(); 10];
+        assert!(plan_operations(&snap_with_raw, &changes_2, &ops_10, &catalog).is_ok());
+
+        let mut ops_11 = ops_10;
+        ops_11.push(one_add.clone());
+        let err_13 = plan_operations(&snap_with_raw, &changes_2, &ops_11, &catalog).unwrap_err();
+        assert!(err_13.contains("多すぎます"), "{err_13}");
+
+        // 空き 1 枠で 2 個追加は拒否、1 個 Remove と併せて 2 個 Add なら許可
+        snap_with_raw.free_block_slots = 1;
+        let ops_2_adds = vec![one_add.clone(), one_add.clone()];
+        let err_slots = plan_operations(&snap_with_raw, &[], &ops_2_adds, &catalog).unwrap_err();
+        assert!(
+            err_slots.contains("空きブロックスロットが足りません"),
+            "{err_slots}"
+        );
+
+        let ops_rm_and_2_adds = vec![
+            BlockOp::Remove {
+                block: "block2".into(),
+            },
+            one_add.clone(),
+            one_add,
+        ];
+        assert!(plan_operations(&snap_with_raw, &[], &ops_rm_and_2_adds, &catalog).is_ok());
+
+        // Before("block1") + After("block1") の 2 回連続 Add で、スライド後の slot 2 を基準に slot 3 へ配置される
+        let snap = snapshot_from_preset(
+            &test_preset(false, false),
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "37B".into(),
+            "Multi Add".into(),
+        );
+        let mut port = FakePort::new(catalog, snap.clone());
+        let outcome = apply_operations(
+            &mut port,
+            &snap,
+            &[],
+            &[
+                BlockOp::Add {
+                    model: "Dynamic Hall".into(),
+                    position: BlockPosition::Before("block1".into()),
+                    stereo: Some(false),
+                    amp_cab: false,
+                },
+                BlockOp::Add {
+                    model: "Brit J45 Brt".into(),
+                    position: BlockPosition::After("block1".into()),
+                    stereo: None,
+                    amp_cab: false,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(outcome.error, None);
+        assert_eq!(
+            outcome.steps,
+            vec![
+                AppliedStep::Added {
+                    block_id: "block1".into(),
+                    model_name: "Dynamic Hall".into(),
+                },
+                AppliedStep::Added {
+                    block_id: "block3".into(),
+                    model_name: "Brit J45 Brt".into(),
+                },
+            ]
+        );
+        assert_eq!(port.read_calls, 1);
+        assert_eq!(port.snapshot.blocks.len(), 3);
+        assert_eq!(port.snapshot.blocks[0].id, "block1");
+        assert_eq!(port.snapshot.blocks[1].id, "block2");
+        assert_eq!(port.snapshot.blocks[1].name, "Tone Sovereign");
+        assert_eq!(port.snapshot.blocks[2].id, "block3");
+        assert_eq!(port.snapshot.blocks[2].name, "Brit J45 Brt");
+        assert_eq!(port.snapshot.blocks[2].category, "Amp");
+
+        // block2 (slot != 1) を基準にした Remove + Before("block2") でも正しくスロットを解決できる
+        let snap2 = port.snapshot.clone();
+        let outcome2 = apply_operations(
+            &mut port,
+            &snap2,
+            &[],
+            &[
+                BlockOp::Remove {
+                    block: "block3".into(),
+                },
+                BlockOp::Add {
+                    model: "Dynamic Hall".into(),
+                    position: BlockPosition::Before("block2".into()),
+                    stereo: Some(true),
+                    amp_cab: false,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(outcome2.error, None);
+        assert_eq!(port.snapshot.blocks[1].id, "block2");
+        assert_eq!(port.snapshot.blocks[1].model_number, 2);
+    }
+
+    #[test]
+    fn snapshot_and_chain_view_carry_category_and_color() {
+        let (catalog, _tmp) = test_catalog();
+        let snap = snapshot_from_preset(
+            &test_preset(false, false),
+            &catalog,
+            rpc::ControlLayout::Stomp,
+            "12A".into(),
+            "Clean View".into(),
+        );
+        let view = to_chain_view(&snap);
+        assert_eq!(view.slot_label, "12A");
+        assert_eq!(view.preset_name, "Clean View");
+        assert_eq!(view.free_block_slots, 2);
+        assert_eq!(view.blocks.len(), 1);
+        assert_eq!(view.blocks[0].category, "Dist");
+        assert_eq!(view.blocks[0].color_hex, "#f5901e");
+        assert_eq!(view.blocks[0].params[0].kind, "number");
+        assert_eq!(view.blocks[0].params[0].min.as_deref(), Some("0.0"));
+        assert_eq!(view.blocks[0].params[0].max.as_deref(), Some("10.0"));
+        assert_eq!(view.blocks[0].params[1].kind, "choice");
     }
 
     fn verify_usb_round_trip(idle_wait: Duration) {

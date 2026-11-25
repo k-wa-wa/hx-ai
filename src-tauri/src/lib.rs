@@ -134,6 +134,14 @@ async fn hx_status(state: State<'_, AppState>) -> Result<hx_device::HxStatus, St
 }
 
 #[tauri::command]
+async fn get_chain(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<hx_device::ChainView, String> {
+    workflow::read_chain_view(app, &state).await
+}
+
+#[tauri::command]
 async fn disconnect_hx(state: State<'_, AppState>) -> Result<hx_device::HxStatus, String> {
     let hx = state.hx.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -282,6 +290,7 @@ pub fn run() {
             permission_status,
             grant_permission,
             hx_status,
+            get_chain,
             disconnect_hx,
             set_reference,
             set_reference_start,
